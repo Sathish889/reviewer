@@ -1,0 +1,7 @@
+# Machine-specific config (absolute paths + cross-repo hints) — never commit.
+llm-review.config.json
+.llm-review.config.json
+
+# Editor / OS noise
+.DS_Store
+*.swp

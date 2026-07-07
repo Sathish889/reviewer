@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# llm-review — on-demand, Claude-backed code review of your changes.
+# Run it from inside any git repo, from a parent folder containing a single repo, or pass a path:
+#     llm-review [path] [baseRef]
+#   - no baseRef: reviews uncommitted+staged changes (else unpushed commits, else vs origin default branch)
+#   - baseRef:    reviews <baseRef>...HEAD  (what a pre-push hook is about to push)
+# Advisory only — prints findings, changes nothing, always exits 0-ish (never blocks a push).
+#
+# Needs: the `claude` CLI + a modern `node` on PATH. If your `node` lives under a version manager
+# (nvm/asdf/volta), point LLM_REVIEW_NODE_BIN at that bin dir (e.g. export it in your shell profile).
+set -euo pipefail
+
+# Prepend an optional node bin dir (version managers) so the right node is found.
+[ -n "${LLM_REVIEW_NODE_BIN:-}" ] && export PATH="$LLM_REVIEW_NODE_BIN:$PATH"
+
+# Resolve this script's real directory, following symlinks (works when installed to ~/.local/bin).
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+ENGINE="$DIR/../lib/llm-diff-review.mjs"
+[ -f "$ENGINE" ] || { echo "llm-review: engine not found at $ENGINE"; exit 1; }
+
+command -v node >/dev/null 2>&1 || { echo "llm-review: node not found on PATH (set LLM_REVIEW_NODE_BIN?) — skipping"; exit 0; }
+
+target="${1:-$PWD}"
+root="$(git -C "$target" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$root" ]; then
+  # target isn't a git repo — look one level down for a single git repo
+  for d in "$target"/*/; do
+    r="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null || true)" && [ -n "$r" ] && { root="$r"; break; }
+  done
+fi
+[ -n "$root" ] || { echo "llm-review: no git repo at or directly under: $target"; exit 1; }
+
+echo "▶ LLM review of: $root"
+node "$ENGINE" "$root" "${2:-}"

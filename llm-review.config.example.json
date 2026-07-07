@@ -1,0 +1,20 @@
+{
+  "//": "Copy this to llm-review.config.json (gitignored) and edit. All fields optional.",
+  "//model": "Which Claude model the reviewer runs on (default: sonnet).",
+  "model": "sonnet",
+
+  "//crossRepo": "Optional. When the repo being reviewed matches `match`, also give the reviewer read-only access to `related` repos and steer it with `hint`. First match wins. Omit entirely for a plain single-repo review. Set contractOnly:true to only pull related repos in when the diff looks contract-relevant (API/params/schema), keeping unrelated changes fast + cheap.",
+  "crossRepo": [
+    {
+      "match": "my-frontend-app",
+      "related": ["/absolute/path/to/backend-repo", "/absolute/path/to/api-docs-repo"],
+      "hint": "CROSS-REPO: this frontend renders data from the api-docs repo and calls the backend. When the diff changes how endpoints/params are resolved, verify against the actual docs and backend contracts; flag mismatches.",
+      "contractOnly": true
+    },
+    {
+      "match": "api-docs-repo",
+      "related": ["/absolute/path/to/backend-repo"],
+      "hint": "CROSS-REPO: the backend is the source of truth. For every changed endpoint, verify docs request params == the validator, response fields == what the handler actually returns, enums == the data model, method/path == the controller. Flag doc drift."
+    }
+  ]
+}
