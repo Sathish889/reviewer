@@ -1,9 +1,17 @@
 {
-  "//": "Copy this to llm-review.config.json (gitignored) and edit. All fields optional.",
+  "//": "Copy this to llm-review.config.json (gitignored) and edit. ALL fields are optional — with no config the tool just reviews the one repo.",
+
   "//model": "Which Claude model the reviewer runs on (default: sonnet).",
   "model": "sonnet",
 
-  "//crossRepo": "Optional. When the repo being reviewed matches `match`, also give the reviewer read-only access to `related` repos and steer it with `hint`. First match wins. Omit entirely for a plain single-repo review. Set contractOnly:true to only pull related repos in when the diff looks contract-relevant (API/params/schema), keeping unrelated changes fast + cheap.",
+  "//excludes": "Extra git pathspecs to drop from the diff, on top of the built-in defaults (dist/build/out/coverage/node_modules, *.min.*, *.map, lockfiles). Use this for generated files specific to your repo — generated docs, snapshots, compiled protobufs, etc. Git pathspec magic: '*' also matches '/'.",
+  "excludes": [
+    "docs/generated/*",
+    "*.generated.ts",
+    "src/**/__snapshots__/*"
+  ],
+
+  "//crossRepo": "When the repo being reviewed matches `match` (regex on its absolute path), also give the reviewer read-only access to `related` repos and steer it with `hint`. First match wins. Omit entirely for a plain single-repo review. Set contractOnly:true to pull related repos in ONLY when the diff looks contract-relevant (endpoints/params/schema/migrations) — keeps unrelated changes fast and cheap.",
   "crossRepo": [
     {
       "match": "my-frontend-app",
