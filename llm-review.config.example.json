@@ -1,10 +1,22 @@
 {
-  "//": "Copy this to llm-review.config.json (gitignored) and edit. ALL fields are optional — with no config the tool just reviews the one repo.",
+  "//": "Copy this to llm-review.config.json (gitignored) and edit. ALL fields are optional — with no config the tool auto-detects a provider and reviews the one repo.",
 
-  "//model": "Which Claude model the reviewer runs on (default: sonnet).",
+  "//provider": "Which AI backend to use: \"claude\" (needs the `claude` CLI + ANTHROPIC_API_KEY) or \"gemini\" (needs the `gemini` CLI + GEMINI_API_KEY). Omit to auto-detect (claude, then gemini). Env override: LLM_REVIEW_PROVIDER.",
+  "provider": "claude",
+
+  "//model": "Model to review with, applied to whichever provider is chosen. Omit to use the provider default (claude → sonnet, gemini → gemini-2.5-pro). Env override: LLM_REVIEW_MODEL.",
   "model": "sonnet",
 
-  "//excludes": "Extra git pathspecs to drop from the diff, on top of the built-in defaults (dist/build/out/coverage/node_modules, *.min.*, *.map, lockfiles). Use this for generated files specific to your repo — generated docs, snapshots, compiled protobufs, etc. Git pathspec magic: '*' also matches '/'.",
+  "//providers": "Optional per-provider overrides — handy if your CLI version needs different flags. bin = command name, model = model id, extraArgs = extra args inserted before the prompt.",
+  "providers": {
+    "claude": { "bin": "claude", "model": "sonnet", "extraArgs": [] },
+    "gemini": { "bin": "gemini", "model": "gemini-2.5-pro", "extraArgs": [] }
+  },
+
+  "//requirementsFile": "Optional path (relative to the repo) to a requirements/spec file. The reviewer verifies the change SATISFIES it and flags anything unmet. Also auto-detected: REQUIREMENTS.md / docs/REQUIREMENTS.md. Env override: LLM_REVIEW_REQUIREMENTS (a path OR inline text).",
+  "requirementsFile": "docs/REQUIREMENTS.md",
+
+  "//excludes": "Extra git pathspecs to drop from the diff, on top of the built-in defaults (dist/build/out/coverage/node_modules/vendor, *.min.*, *.map, lockfiles). Use this for generated files specific to your repo. Git pathspec magic: '*' also matches '/'.",
   "excludes": [
     "docs/generated/*",
     "*.generated.ts",
@@ -20,9 +32,9 @@
       "contractOnly": true
     },
     {
-      "match": "api-docs-repo",
-      "related": ["/absolute/path/to/backend-repo"],
-      "hint": "CROSS-REPO: the backend is the source of truth. For every changed endpoint, verify docs request params == the validator, response fields == what the handler actually returns, enums == the data model, method/path == the controller. Flag doc drift."
+      "match": "payments-service",
+      "related": ["/absolute/path/to/ledger-service", "/absolute/path/to/api-docs-repo"],
+      "hint": "CROSS-REPO: money movement. Verify amount/currency/rounding, idempotency (a retry must not double-charge), capture/void/refund state transitions, and that every money-moving endpoint is authorized. Check the ledger service and the API docs stay consistent with this change."
     }
   ]
 }
