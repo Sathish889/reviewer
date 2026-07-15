@@ -10,9 +10,11 @@ code and never blocks a push** — it's a second pair of eyes on the way out.
 
 ```
 ▶ LLM review of: /path/to/your/repo
-llm-diff-review: reviewing with claude (sonnet)
+llm-diff-review: reviewing with claude (opus)
 - src/pay.ts:42 :: refund path swallows the gateway error and returns success — caller treats a failed refund as done (high)
 - src/pay.ts:88 :: no idempotency key on capture, so a retried request double-charges (high)
+- src/user.ts:​31 :: CWE-89 / A03: SQL injection — req.query.id concatenated into the query (high)
+- src/api.ts:​64 :: [RUNTIME] SSRF: fetch(url) from user input — confirm with `nuclei`/ZAP; test payload http://169.254.169.254/ (medium)
 - src/pay.ts:​7 :: dead import left after removing the retry helper (low)
 ```
 
@@ -27,7 +29,7 @@ API key from the environment. Install whichever you have:
 
 | Provider | CLI | Key (env var) | Default model |
 |---|---|---|---|
-| **Claude** | [`claude`](https://claude.com/claude-code) | `ANTHROPIC_API_KEY` (or an authenticated Claude CLI) | `sonnet` |
+| **Claude** | [`claude`](https://claude.com/claude-code) | `ANTHROPIC_API_KEY` (or an authenticated Claude CLI) | `opus` |
 | **Gemini** | [`gemini`](https://github.com/google-gemini/gemini-cli) | `GEMINI_API_KEY` | `gemini-2.5-pro` |
 
 It **auto-detects** `claude`, then `gemini`. Force one, or change the model:
@@ -127,7 +129,14 @@ The reviewer works through a deliberate method rather than skimming the diff:
      migrations, IAM) · **Terminal/CLI** (args, exit codes, signals, pipes) · **Payments** (amount/currency/
      rounding, idempotent retries, capture/void/refund state, no double-charge, no logged secrets — treated as
      high severity).
-4. **Requirements** — if you point it at a spec, it verifies the change actually satisfies it and flags gaps
+4. **Security testing (SAST · risk · posture · runtime test-plan)** — a dedicated pass over every changed
+   function, endpoint, and data flow: injection, XSS, SSRF, path traversal, (de)serialization/XXE, auth &
+   **authorization incl. IDOR/BOLA**, crypto misuse, hardcoded secrets, sensitive-data exposure, CSRF/CORS,
+   ReDoS/DoS, prototype pollution, and IaC/config. It runs a lightweight **STRIDE** threat model, tags each
+   finding with its **CWE + OWASP Top-10** category, flags risky dependencies, and — for issues only a running
+   app can confirm (**DAST / IAST / pentest / CVE-scan**) — emits a `[RUNTIME]` test-plan with the exact
+   payload and tool instead of staying silent.
+5. **Requirements** — if you point it at a spec, it verifies the change actually satisfies it and flags gaps
    (see [Requirements](#reviewing-against-requirements)).
 
 It reports contract drift against a source-of-truth repo, cross-service integration breaks, concurrency bugs,

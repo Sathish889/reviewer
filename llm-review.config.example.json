@@ -4,12 +4,12 @@
   "//provider": "Which AI backend to use: \"claude\" (needs the `claude` CLI + ANTHROPIC_API_KEY) or \"gemini\" (needs the `gemini` CLI + GEMINI_API_KEY). Omit to auto-detect (claude, then gemini). Env override: LLM_REVIEW_PROVIDER.",
   "provider": "claude",
 
-  "//model": "Model to review with, applied to whichever provider is chosen. Omit to use the provider default (claude → sonnet, gemini → gemini-2.5-pro). Env override: LLM_REVIEW_MODEL.",
-  "model": "sonnet",
+  "//model": "Model to review with, applied to whichever provider is chosen. Omit to use the provider default (claude → opus, gemini → gemini-2.5-pro). NOTE: a top-level \"model\" is passed to BOTH providers — if you switch between claude and gemini, set per-provider models under \"providers\" instead (below) so a claude-only id like \"opus\" isn't sent to gemini. Env override: LLM_REVIEW_MODEL.",
+  "model": "opus",
 
-  "//providers": "Optional per-provider overrides — handy if your CLI version needs different flags. bin = command name, model = model id, extraArgs = extra args inserted before the prompt.",
+  "//providers": "Optional per-provider overrides — the safe way to pin a strong model per backend. bin = command name, model = model id, extraArgs = extra args inserted before the prompt.",
   "providers": {
-    "claude": { "bin": "claude", "model": "sonnet", "extraArgs": [] },
+    "claude": { "bin": "claude", "model": "opus", "extraArgs": [] },
     "gemini": { "bin": "gemini", "model": "gemini-2.5-pro", "extraArgs": [] }
   },
 
