@@ -391,6 +391,11 @@ TRUNC_OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" 
 is "style is measured before truncation"          "$(printf '%s' "$TRUNC_OUT" | grep -c 'wide.js.*your limit is 40')" 1
 rm -f "$WORK/repo/wide.js"; git -C "$WORK/repo" add -A
 
+# A finding the model TAGS as style is capped at the profile severity, however it rated itself.
+mkfake 'echo "- app.js:1 :: [style] this line is shaped oddly (high)"'
+is "a tagged style finding is capped, not blocking" "$(run REVIEW_FAIL_ON=high LLM_REVIEW_STYLE="$WORK/style.json")" 0
+is "  ...and is labelled in the output"           "$(grep -c '\[style\]' "$WORK/out")" 1
+
 # A real high finding that merely mentions the word "style" must keep its severity.
 mkfake 'echo "- app.js:1 :: auth bypass: the style guide is irrelevant here, this endpoint has no check (high)"'
 is "a high finding mentioning 'style' still blocks" "$(run REVIEW_FAIL_ON=high LLM_REVIEW_STYLE="$WORK/style.json")" 2
