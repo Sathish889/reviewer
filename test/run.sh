@@ -378,6 +378,23 @@ printf '{"style":{"maxLineLength":42,"severity":"medium"}}' > "$WH/.config/llm-r
 env HOME="$WH" node "$KIT/lib/learn-style.mjs" "$LS" --write >/dev/null 2>&1
 is "--write keeps values you set by hand"         "$(node -e "console.log(require('$WH/.config/llm-review/style.json').style.maxLineLength)")" 42
 
+# Style must be measured on the ORIGINAL lines. With a tiny per-call ceiling the packer rewrites
+# sections to truncation placeholders; a checker running afterwards would find nothing to report.
+mkfake 'echo CLEAN'
+python3 - "$WORK/repo/wide.js" <<'EOF'
+import sys
+open(sys.argv[1],'w').write('\n'.join('const w%d = "%s";' % (n, 'y'*150) for n in range(40)))
+EOF
+git -C "$WORK/repo" add -A
+TRUNC_OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+  LLM_REVIEW_STYLE="$WORK/style.json" REVIEW_MAX_PROMPT_CHARS=400 node "$ENGINE" "$WORK/repo" --staged 2>/dev/null)"
+is "style is measured before truncation"          "$(printf '%s' "$TRUNC_OUT" | grep -c 'wide.js.*your limit is 40')" 1
+rm -f "$WORK/repo/wide.js"; git -C "$WORK/repo" add -A
+
+# A real high finding that merely mentions the word "style" must keep its severity.
+mkfake 'echo "- app.js:1 :: auth bypass: the style guide is irrelevant here, this endpoint has no check (high)"'
+is "a high finding mentioning 'style' still blocks" "$(run REVIEW_FAIL_ON=high LLM_REVIEW_STYLE="$WORK/style.json")" 2
+
 echo "style — thorough does not spend a call on style"
 mkfake 'echo CLEAN'
 run LLM_REVIEW_BUDGET=thorough >/dev/null

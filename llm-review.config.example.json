@@ -27,7 +27,7 @@
 
   "//speed": "Further env knobs, all optional: REVIEW_MAX_CALLS (hard ceiling), REVIEW_TOOL_BUDGET (Read/Grep calls the reviewer may make), REVIEW_MAX_FINDINGS (output cap), REVIEW_MAX_PROMPT_CHARS (per-call prompt ceiling), REVIEW_TIMEOUT_MS (420000 — a killed call is wasted tokens), REVIEW_DEADLINE_MS (1200000), REVIEW_PROSE_CAP (40000 per markdown/txt document), LLM_REVIEW_CONCURRENCY.",
 
-  "//style": "YOUR conventions. Run `llm-review --learn-style <dirs> --write` to infer these from code you have already written rather than picking numbers by hand. Read from .editorconfig first, then ~/.config/llm-review/style.json, then here. A STYLE.md in the repo is passed to the reviewer verbatim for rules a schema cannot express. Line-length/indent/trailing-whitespace are checked in CODE (no tokens); the model judges consistency with the surrounding files.",
+  "//style": "YOUR conventions. The numbers below are ILLUSTRATIVE, not recommended — they came from one particular codebase. Yours will differ, which is the point. Run `llm-review --learn-style <dirs> --write` to infer these from code you have already written rather than picking numbers by hand. Read from .editorconfig first, then ~/.config/llm-review/style.json, then here. A STYLE.md in the repo is passed to the reviewer verbatim for rules a schema cannot express. Line-length/indent/trailing-whitespace are checked in CODE (no tokens); the model judges consistency with the surrounding files.",
   "style": {
     "maxLineLength": 100,
     "indent": "spaces",
