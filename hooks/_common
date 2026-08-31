@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Shared bootstrap for every llm-review git hook. Sourced, never executed.
+#
+# Provides: llm_review_env, llm_review_disabled, llm_review_mid_sequence,
+#           llm_review_ledger_dir, llm_review_mark, llm_review_was_reviewed
+
+# --- Make node + llm-review findable. -------------------------------------------------------------
+# Hooks launched from GUI clients (Tower, Fork, IDEs) get a minimal PATH and a minimal env, and node
+# often lives under a version manager — so resolve the newest one dynamically rather than hardcoding a
+# path that an nvm upgrade would quietly break.
+llm_review_env() {
+  export PATH="$HOME/.local/bin:$PATH"
+  # The `claude` CLI reads its credentials from the macOS Keychain, and that lookup needs USER. GUI git
+  # clients launch hooks without it, and claude then exits 1 with "Not logged in" — so set it from the
+  # real uid rather than trusting the environment.
+  export USER="${USER:-$(id -un)}"
+  if ! command -v node >/dev/null 2>&1; then
+    local base newest
+    for base in "$HOME/.nvm/versions/node" "$HOME/.asdf/installs/nodejs" "$HOME/.volta/tools/image/node" "$HOME/.local/share/fnm/node-versions"; do
+      [ -d "$base" ] || continue
+      newest="$(ls -1 "$base" 2>/dev/null | sort -V | tail -1)"
+      [ -n "$newest" ] && [ -x "$base/$newest/bin/node" ] && { export LLM_REVIEW_NODE_BIN="$base/$newest/bin"; return 0; }
+      [ -n "$newest" ] && [ -x "$base/$newest/installation/bin/node" ] && { export LLM_REVIEW_NODE_BIN="$base/$newest/installation/bin"; return 0; }
+    done
+  fi
+}
+
+# --- Off switches, checked by every hook. ----------------------------------------------------------
+#   LLM_REVIEW_SKIP=1 git commit ...        once
+#   git config review.llm false             this repo, permanently
+#   git config --global review.llm false    everywhere, permanently
+llm_review_disabled() {
+  [ -n "${LLM_REVIEW_SKIP:-}" ] && return 0
+  [ "$(git config --bool review.llm 2>/dev/null)" = "false" ] && return 0
+  return 1
+}
+
+# --- Don't fire during multi-commit machinery: a rebase, merge, cherry-pick or bisect would otherwise
+# kick off one full review per replayed commit, and block a rebase halfway through. ------------------
+llm_review_mid_sequence() {
+  local gitdir marker
+  gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+  for marker in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD BISECT_LOG REVERT_HEAD; do
+    [ -e "$gitdir/$marker" ] && return 0
+  done
+  return 1
+}
+
+# --- REVIEW LEDGER. The point of the ledger is that nothing slips through unnoticed: `--no-verify`
+# can always skip a local gate (git has no way to prevent that), but it CANNOT stop post-commit from
+# recording that a commit was never reviewed. The ledger is what turns "the gate was bypassed" from
+# invisible into an auditable line you can see before the code leaves the machine. -------------------
+llm_review_ledger_dir() {
+  local d="${LLM_REVIEW_STATE:-$HOME/.local/state/llm-review}"
+  mkdir -p "$d" 2>/dev/null || return 1
+  printf '%s' "$d"
+}
+# llm_review_mark <sha> <verdict> [detail]
+llm_review_mark() {
+  local d; d="$(llm_review_ledger_dir)" || return 0
+  local repo; repo="$(git rev-parse --show-toplevel 2>/dev/null || echo '?')"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$repo" "${3:-}" >> "$d/reviewed.log"
+  [ "$2" = "bypassed" ] && printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$repo" "${3:-}" >> "$d/bypass.log"
+  return 0
+}
+# llm_review_was_reviewed <sha>  → 0 if THIS checkout has a non-bypassed entry for it.
+#
+# Keyed on repo AND sha. A SHA is shared by every clone, worktree and fork of the same history, so
+# matching on it alone meant a commit reviewed in one checkout counted as reviewed in all of them —
+# and pre-push would skip a range nobody here had ever looked at.
+llm_review_was_reviewed() {
+  local d repo; d="${LLM_REVIEW_STATE:-$HOME/.local/state/llm-review}"
+  [ -f "$d/reviewed.log" ] || return 1
+  repo="$(git rev-parse --show-toplevel 2>/dev/null || echo '?')"
+  # Only an explicit "reviewed" counts. Excluding known-bad verdicts instead meant every new status
+  # ("not-reviewed", "stale", anything added later) defaulted to vouching for the commit.
+  awk -F'\t' -v sha="$1" -v repo="$repo" '$2==sha && $4==repo && $3=="reviewed" { found=1 } END { exit !found }' "$d/reviewed.log"
+}

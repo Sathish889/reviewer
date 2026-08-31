@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# The post-commit review step — review the commit that was just created, and record it in the ledger.
+#
+# Deliberately contains NO hook-chaining: this is called both by the global post-commit hook (after it
+# has chained repo-local hooks) and DIRECTLY by husky/lefthook repos' own post-commit. Keeping chaining
+# out of here is what makes that path safe — otherwise .husky/post-commit would call the global hook,
+# which would chain back to .husky/post-commit, forever.
+#
+# Advisory: the commit already exists, the exit status is always 0, Ctrl-C just skips the review.
+#
+# Its second job is AUDIT. pre-commit leaves a verdict marker when its gate ran; if that marker is
+# missing, this commit reached the repository without passing the gate (--no-verify, gate disabled,
+# reviewer offline) — that is recorded in the bypass ledger so pre-push can warn about it later.
+HOOKS_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$HOOKS_DIR/_common"
+
+llm_review_disabled && exit 0
+llm_review_mid_sequence && exit 0
+
+GITDIR="$(git rev-parse --absolute-git-dir 2>/dev/null)" || exit 0
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+SHA="$(git rev-parse HEAD 2>/dev/null)" || exit 0
+
+# --- consume the pre-commit verdict marker (if any) and stamp the ledger ---
+GATE_ON=0
+[ "$(git config --bool review.llmPrecommit 2>/dev/null)" = "true" ] && GATE_ON=1
+if [ -f "$GITDIR/llm-review-verdict" ]; then
+  VERDICT="$(cut -f1 < "$GITDIR/llm-review-verdict")"
+  MARKED_ON="$(cut -f2 < "$GITDIR/llm-review-verdict")"
+  rm -f "$GITDIR/llm-review-verdict"
+  # The marker certifies a review done on top of MARKED_ON. If this commit's parent is something else,
+  # the marker is a leftover from an aborted commit and says nothing about the commit just made.
+  PARENT_NOW="$(git rev-parse --verify --quiet HEAD~1 || echo ROOT)"
+  if [ "$MARKED_ON" != "$PARENT_NOW" ]; then
+    llm_review_mark "$SHA" "bypassed" "stale pre-commit verdict (reviewed on top of ${MARKED_ON:-?}, committed on top of $PARENT_NOW)"
+    echo "! llm-review: ignoring a stale review verdict — this commit was NOT the one reviewed" >&2
+    VERDICT=stale
+  else
+    llm_review_mark "$SHA" "$VERDICT" "pre-commit gate"
+  fi
+  # Already reviewed as staged content moments ago — re-reviewing the identical diff is pure waste.
+  # "nothing-to-review" means the gate ran and correctly found an empty index (an amend with no
+  # changes); there is nothing to review now either.
+  # "not-installed" is an honest, sanctioned skip: nothing to re-review, and not a bypass.
+  case "$VERDICT" in reviewed|nothing-to-review|not-installed) exit 0 ;; esac
+elif [ "$GATE_ON" = "1" ]; then
+  llm_review_mark "$SHA" "bypassed" "pre-commit gate enabled but did not run (--no-verify?)"
+  echo "! llm-review: this commit BYPASSED the pre-commit gate — recorded in $(llm_review_ledger_dir)/bypass.log" >&2
+fi
+
+# --- advisory review of the commit just made ---
+[ "$(git config --bool review.llmPostcommit 2>/dev/null)" = "false" ] && exit 0
+
+llm_review_env
+command -v llm-review >/dev/null 2>&1 || exit 0
+
+if ! PARENT="$(git rev-parse --verify --quiet HEAD~1)"; then
+  echo "> llm-review: root commit has no parent to diff against — run 'llm-review' manually to review it." >&2
+  exit 0
+fi
+
+# Advisory only, and it only runs at all when the blocking gate did NOT (gate off, or it could not
+# complete). Keep it cheap — its job is to tell you something, not to be the authority.
+export LLM_REVIEW_BUDGET="${LLM_REVIEW_BUDGET:-$(git config review.llmBudget 2>/dev/null || echo minimal)}"
+echo "> llm-review — reviewing $(git rev-parse --short HEAD) (budget: $LLM_REVIEW_BUDGET, Ctrl-C to skip; the commit is already safe)"
+# Arm the exit codes so the OUTCOME is knowable, then ignore the blocking one: this path stays
+# advisory (exit 2 = findings is fine, the commit already exists), but exit 3 = "could not verify"
+# must not be recorded as a review. Stamping "reviewed" unconditionally meant that on a machine with
+# no reviewer CLI installed, every commit was logged as reviewed and pre-push believed it.
+REVIEW_FAIL_ON=any llm-review "$ROOT" "$PARENT"
+st=$?
+case "$st" in
+  0|2) llm_review_mark "$SHA" "reviewed" "post-commit" ;;
+  *)   llm_review_mark "$SHA" "not-reviewed" "post-commit could not complete (status $st)"
+       echo "! llm-review: this commit was NOT reviewed (status $st) — recorded as such" >&2 ;;
+esac
+exit 0

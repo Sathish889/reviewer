@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Global passthrough shim for 'commit-msg'.
+# Setting core.hooksPath globally makes git ignore .git/hooks, so this exists purely to delegate back
+# to whatever hook the repo itself defines — including its exit code, so a repo hook meant to BLOCK
+# still blocks. No global behavior is added here.
+HOOKS_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$HOOKS_DIR/_chain"
+chain_repo_hook "commit-msg" "$@"
+exit $?

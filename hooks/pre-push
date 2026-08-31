@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# GLOBAL pre-push — llm-review of the FULL range about to be pushed, plus a ledger coverage audit.
+#
+# Why this exists on top of the per-commit review: post-commit reviews each commit in ISOLATION. An
+# MR/PR bot reviews the whole branch at once, so it sees problems that only appear ACROSS commits (a
+# helper added in commit 1 and misused in commit 3, a migration contradicted by a later model change).
+# This reviews exactly what the bot will review — the same range — before the MR exists.
+#
+# It is also the last place to catch a commit that skipped the pre-commit gate with --no-verify: those
+# are in the bypass ledger, and the range review covers them anyway before they leave the machine.
+#
+# Blocks on (high)-severity findings. STRICT mode additionally blocks when the review could not finish.
+#     git push --no-verify                              # skip once
+#     LLM_REVIEW_SKIP=1 git push                        # skip once
+#     git config review.llmPrepush false                # off for this repo
+#     git config --global review.llmPrepush false       # off everywhere
+#     git config --global review.llmPrepushBlock false  # review, but never block
+#     git config --global review.llmPrepushStrict true  # also block when the review cannot complete
+HOOK_NAME=pre-push
+HOOKS_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$HOOKS_DIR/_chain"
+# shellcheck source=/dev/null
+. "$HOOKS_DIR/_common"
+
+# git feeds "<local ref> <local sha> <remote ref> <remote sha>" on stdin. Buffer it: the repo's own
+# hook needs it too, and stdin can only be consumed once.
+REFS="$(cat)"
+
+# 1) Repo's own pre-push first, with its stdin replayed. Its exit code still blocks if it means to.
+printf '%s\n' "$REFS" | chain_repo_hook "$HOOK_NAME" "$@" || exit $?
+
+llm_review_disabled && exit 0
+[ "$(git config --bool review.llmPrepush 2>/dev/null)" = "false" ] && exit 0
+
+llm_review_env
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+
+ZERO=0000000000000000000000000000000000000000
+EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+MAX_REFS="$(git config --int review.llmMaxRefsPerPush 2>/dev/null || echo 5)"
+
+BLOCK=1
+[ "$(git config --bool review.llmPrepushBlock 2>/dev/null)" = "false" ] && BLOCK=0
+STRICT=0
+[ "$(git config --bool review.llmPrepushStrict 2>/dev/null)" = "true" ] && STRICT=1
+
+# review_range <base> <tip> <label> <full_history 0|1>  -> 0 allow, 1 block
+review_range() {
+  local BASE="$1" TIP="$2" LABEL="$3" FULL="$4" RANGE COUNT UNREVIEWED sha st RANGE_BUDGET=""
+
+  if [ "$FULL" = "1" ]; then RANGE="$TIP"; else RANGE="$BASE..$TIP"; fi
+  COUNT="$(git rev-list --count "$RANGE" 2>/dev/null || echo 0)"
+  [ "$COUNT" -gt 0 ] || return 0
+
+  # LEDGER AUDIT: which of these commits never passed a review on this machine?
+  UNREVIEWED=0
+  while read -r sha; do
+    [ -n "$sha" ] || continue
+    llm_review_was_reviewed "$sha" || UNREVIEWED=$((UNREVIEWED + 1))
+  done < <(git rev-list "$RANGE" 2>/dev/null)
+  if [ "$UNREVIEWED" -gt 0 ]; then
+    echo "! llm-review ledger: $UNREVIEWED of $COUNT commit(s) on $LABEL were never reviewed on this machine" >&2
+    echo "  (reviewing the whole range now — bypasses are listed in $(llm_review_ledger_dir)/bypass.log)" >&2
+  else
+    # Every commit here already passed a review when it was made. Reviewing the range again costs a
+    # second full set of provider calls for the same code — the main source of double billing when the
+    # pre-commit gate is on. The cross-commit range review is still worth something (it sees
+    # interactions a single commit cannot), so it is kept for MULTI-commit pushes and skipped when
+    # there is only one commit, which the pre-commit gate has already seen in exactly this form.
+    if [ "$COUNT" -le 1 ]; then
+      echo "> llm-review: $LABEL was already reviewed at commit time — skipping the duplicate push review" >&2
+      return 0
+    fi
+    # Multi-commit range: review it, but cheaply — the individual commits are already covered, so this
+    # pass only has to look for problems that span them.
+    # Scoped to THIS ref only. Exporting here leaked the downgrade into every later ref in the same
+    # push, so a second, never-reviewed branch would silently get the cheap pass too.
+    RANGE_BUDGET=minimal
+    echo "> llm-review: all $COUNT commit(s) already reviewed individually — running a cheap cross-commit pass only" >&2
+  fi
+
+  RANGE_BUDGET="${RANGE_BUDGET:-${LLM_REVIEW_BUDGET:-$(git config review.llmBudget 2>/dev/null || echo balanced)}}"
+  echo "> llm-review — reviewing $COUNT commit(s) on $LABEL (budget: $RANGE_BUDGET, Ctrl-C to skip)"
+  if [ "$BLOCK" = "0" ]; then LLM_REVIEW_BUDGET="$RANGE_BUDGET" llm-review "$ROOT" "$BASE" "$TIP" || true; return 0; fi
+
+  REVIEW_FAIL_ON=high LLM_REVIEW_BUDGET="$RANGE_BUDGET" llm-review "$ROOT" "$BASE" "$TIP"
+  st=$?
+  if [ "$st" = "2" ]; then
+    echo "" >&2
+    echo "x PUSH BLOCKED — high-severity findings on $LABEL. Fix them, or bypass with:" >&2
+    echo "    git push --no-verify" >&2
+    return 1
+  fi
+  if [ "$st" != "0" ] && [ "$st" != "2" ] && [ "$st" != "3" ]; then
+    # An unrecognised exit code is a broken reviewer, not a clean bill of health.
+    echo "" >&2
+    echo "! llm-review exited unexpectedly (status $st) — $LABEL was NOT reviewed." >&2
+    if [ "$STRICT" = "1" ]; then
+      echo "x PUSH BLOCKED (strict mode). Retry, or: git push --no-verify" >&2
+      return 1
+    fi
+    return 0
+  fi
+  if [ "$st" = "3" ]; then
+    # The review could not complete (provider down, timeout, budget). By default the push is allowed —
+    # infra flakiness should not strand your work — but it must NOT read as a clean pass, or you would
+    # trust a gate that never ran. Say so loudly; review.llmPrepushStrict blocks instead.
+    if [ "$STRICT" = "1" ]; then
+      echo "" >&2
+      echo "x PUSH BLOCKED — the review of $LABEL could NOT complete, so it is UNVERIFIED (strict mode)." >&2
+      echo "  Retry, or:  git config --global review.llmPrepushStrict false  /  git push --no-verify" >&2
+      return 1
+    fi
+    echo "" >&2
+    echo "! llm-review did NOT finish — $LABEL was NOT fully reviewed (see above)." >&2
+    echo "  Re-run before opening the MR:  llm-review . $BASE $TIP" >&2
+    echo "" >&2
+  fi
+  return 0
+}
+
+# EVERY ref being pushed is reviewed, not just the first one. `git push --all`, pushing two branches at
+# once, or a push that also moves a second branch used to review only whichever ref git listed first and
+# let the rest through completely unseen.
+NREF=0
+FAILED=0
+while read -r localref localsha _remoteref remotesha; do
+  [ -n "$localsha" ] && [ "$localsha" != "$ZERO" ] || continue    # deletion / blank line
+  case "$localref" in refs/tags/*) continue ;; esac               # a tag moves no new code of its own
+  git cat-file -e "$localsha^{commit}" 2>/dev/null || continue    # not a commit (annotated tag object)
+
+  NREF=$((NREF + 1))
+  if [ "$NREF" -gt "$MAX_REFS" ]; then
+    echo "! llm-review: more than $MAX_REFS refs in this push — the rest are NOT reviewed." >&2
+    echo "  (raise with: git config --global review.llmMaxRefsPerPush <n>)" >&2
+    # Unreviewed refs are a coverage gap, not a pass. Under a blocking gate, refuse rather than let
+    # them out with the same exit status a fully-reviewed push gets.
+    [ "$BLOCK" = "1" ] && { echo "x PUSH BLOCKED — push fewer refs at a time, or raise the limit above." >&2; FAILED=1; }
+    break
+  fi
+
+  LABEL="${localref#refs/heads/}"
+  BASE=""; FULL=0
+  if [ "$remotesha" != "$ZERO" ] && git cat-file -e "$remotesha^{commit}" 2>/dev/null; then
+    BASE="$remotesha"                                   # updating an existing remote branch
+  else
+    # New branch: no remote counterpart yet, so fall back to where it forked from the default branch,
+    # then to any other remote-tracking branch.
+    for b in origin/HEAD origin/main origin/master; do
+      mb="$(git merge-base "$b" "$localsha" 2>/dev/null)" && [ -n "$mb" ] && { BASE="$mb"; break; }
+    done
+    if [ -z "$BASE" ]; then
+      for b in $(git for-each-ref --format='%(refname:short)' refs/remotes 2>/dev/null); do
+        mb="$(git merge-base "$b" "$localsha" 2>/dev/null)" && [ -n "$mb" ] && { BASE="$mb"; break; }
+      done
+    fi
+  fi
+
+  # NO BASE AT ALL — the first push of a repository, or a branch with an unrelated history. Returning
+  # early here (the old behaviour) meant the very first push of a repo went out completely unreviewed:
+  # the single largest amount of never-reviewed code ever to leave the machine at once. Fall back to
+  # the empty tree and review everything — but only when "everything" is a sane size; a 10k-file
+  # initial import is not something to hold a push on. Either way, say what happened.
+  if [ -z "$BASE" ]; then
+    NFILES="$(git ls-tree -r --name-only "$localsha" 2>/dev/null | wc -l | tr -d ' ')"
+    LIMIT="$(git config --int review.llmFirstPushFileLimit 2>/dev/null || echo 200)"
+    if [ "${NFILES:-0}" -gt 0 ] && [ "${NFILES:-0}" -le "$LIMIT" ]; then
+      BASE="$EMPTY_TREE"; FULL=1
+      echo "! llm-review: no remote base for $LABEL (first push) — reviewing the ENTIRE tree ($NFILES files)" >&2
+    else
+      echo "! llm-review: no remote base for $LABEL and it holds $NFILES files — skipping the full-history review." >&2
+      echo "  $LABEL is NOT reviewed. Review it explicitly:  llm-review . <some-earlier-ref>" >&2
+      echo "  (raise the limit with: git config --global review.llmFirstPushFileLimit <n>)" >&2
+      continue
+    fi
+  fi
+
+  review_range "$BASE" "$localsha" "$LABEL" "$FULL" || FAILED=1
+done <<< "$REFS"
+
+[ "$FAILED" = "1" ] && exit 1
+exit 0

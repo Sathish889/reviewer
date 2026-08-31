@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# GLOBAL post-commit — chain the repo's own hook, then run the llm-review step.
+#
+# Runs in EVERY repo on this machine that does not set its own core.hooksPath. (Husky/lefthook repos DO
+# set one, so they call ./review-commit directly from their own post-commit — see the installer output.)
+#
+# The commit already exists by the time this runs, so your work is never at risk: the review is
+# advisory, git ignores its exit code, and Ctrl-C skips it while keeping the commit.
+#
+# `--no-verify` does NOT skip post-commit — which is exactly why the bypass audit lives here.
+HOOK_NAME=post-commit
+HOOKS_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$HOOKS_DIR/_chain"
+
+# 1) The repo's own post-commit first — the global review is additive, not a replacement.
+chain_repo_hook "$HOOK_NAME" "$@"
+
+# 2) Then review + audit. All opt-out and environment handling lives in review-commit.
+exec "$HOOKS_DIR/review-commit"

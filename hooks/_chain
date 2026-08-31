@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Run a repo's OWN hook of the same name, if it has one.
+#
+# Why this exists: setting `core.hooksPath` globally makes git IGNORE every repo's .git/hooks
+# entirely. Without chaining, installing a global hook would silently disable husky, lefthook,
+# pre-commit-framework, and any hand-written repo hook. So every global hook sources this and
+# delegates first; the global behavior is additive, never a replacement.
+#
+# Sourced, not executed. Expects the hook name as $1 and forwards the caller's args.
+chain_repo_hook() {
+  local name="$1"; shift
+  local gitdir toplevel local_hook
+  gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+  toplevel="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+
+  # Re-entrancy guard. Our own shim inside a repo execs the global hook, which lands back here; without
+  # this, chaining would find the shim again and loop forever on every push.
+  [ -n "${LLM_REVIEW_CHAINING:-}" ] && return 0
+  export LLM_REVIEW_CHAINING=1
+
+  # WHICH hooks we are willing to run is a trust decision. `$gitdir/hooks/` lives in .git, is never
+  # part of a clone, and is exactly what stock git would have run — safe. `.husky/<name>` is TRACKED
+  # content that arrives with the repository, so running it on the strength of anything else tracked
+  # (a committed `.husky/_` directory, say) would mean a hostile repo executes code on `git clone`,
+  # via the post-checkout hook, on any machine with these hooks installed.
+  #
+  # The signal we use is the repo's LOCAL core.hooksPath: it lives in .git/config, which a clone cannot
+  # write. That closes the clone/checkout path, which is the one that matters — `git clone` and
+  # `git checkout` are things people do to code they have not read.
+  #
+  # It is NOT absolute, and the comment should not pretend otherwise: husky's documented setup puts
+  # `husky install` in package.json's "prepare", which npm runs automatically on `npm install`. So
+  # installing dependencies in an untrusted repo can set core.hooksPath and arm its tracked hooks.
+  # There is no defence to add here, because by then the game is already lost: `prepare`, `preinstall`
+  # and `postinstall` run arbitrary code themselves. Anyone running `npm install` on code they do not
+  # trust has executed it, hooks or no hooks. What this check buys is that merely CLONING or CHECKING
+  # OUT a repository never does.
+  local candidates=("$gitdir/hooks/$name")
+  local localpath
+  localpath="$(git config --local core.hooksPath 2>/dev/null || true)"
+  case "$localpath" in
+    .husky/_|.husky|*/.husky/_|*/.husky) candidates+=("$toplevel/.husky/$name") ;;
+  esac
+
+  local local_hook
+  for local_hook in "${candidates[@]}"; do
+    [ -f "$local_hook" ] || continue
+    # Never chain our own shim — it execs the global hook, which would come straight back here.
+    grep -q 'installed by llm-review' "$local_hook" 2>/dev/null && continue
+
+    # A hook pointing at a script that no longer exists would abort the operation with 126/127.
+    # Detect that specific rot and skip it loudly rather than breaking the user's git.
+    #
+    # The target is read out of a file that may be attacker-controlled, so it is NEVER eval'd: an
+    # `exec "$(id)"` line would otherwise be executed here just for being present in the file. Expand
+    # only the two variables real hooks actually use, by literal substitution.
+    local target
+    target="$(sed -n 's/^[[:space:]]*exec[[:space:]]\{1,\}"\{0,1\}\([^"[:space:]]*\)"\{0,1\}.*/\1/p' "$local_hook" | head -1)"
+    case "$target" in
+      *'$('*|*'`'*|*';'*|*'&'*|*'|'*|*'<'*|*'>'*) target="" ;;   # anything shell-active: don't interpret it at all
+    esac
+    if [ -n "$target" ]; then
+      target="${target//\$\{HOME\}/$HOME}"; target="${target//\$HOME/$HOME}"
+      target="${target//\$\{gitdir\}/$gitdir}"; target="${target//\$\{toplevel\}/$toplevel}"
+      case "$target" in
+        *'$'*) : ;;                                              # still has an unexpanded var — can't judge it, run the hook
+        *) if [ ! -x "$target" ]; then
+             echo "! skipping stale repo hook $local_hook (its target $target is missing)" >&2
+             continue
+           fi ;;
+      esac
+    fi
+
+    # Not marked executable is a deliberate signal from the repo (or from git's own checkout), not a
+    # problem to fix on its behalf. Chmod'ing someone else's tracked file to run it is how a dormant
+    # hook becomes a live one.
+    if [ ! -x "$local_hook" ]; then
+      echo "! skipping repo hook $local_hook (not executable)" >&2
+      continue
+    fi
+    "$local_hook" "$@" || return $?
+  done
+  return 0
+}

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# GLOBAL pre-commit — the BLOCKING llm-review gate. Installed by `install.sh --enforce`.
+#
+# Reviews exactly the STAGED tree (index vs HEAD) — precisely what this commit would contain — and
+# refuses the commit on (high)-severity findings. This is the "no code change gets committed on this
+# machine without a review" gate.
+#
+# It is OFF unless explicitly enabled, so a plain install never changes how your commits behave:
+#     git config --global review.llmPrecommit true      # enable everywhere (what --enforce does)
+#     git config review.llmPrecommit false              # disable for this repo
+#
+# STRICT mode (default ON once the gate is enabled) also blocks when the review could not COMPLETE —
+# no reviewer CLI, provider down, timeout. A gate that opens whenever the reviewer is unavailable is
+# not a gate; it just looks like one. Turn that half off if you need to work offline:
+#     git config --global review.llmPrecommitStrict false
+#
+# Escape hatches (all recorded in the bypass ledger by post-commit):
+#     git commit --no-verify        LLM_REVIEW_SKIP=1 git commit        git config review.llm false
+HOOK_NAME=pre-commit
+HOOKS_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$HOOKS_DIR/_chain"
+# shellcheck source=/dev/null
+. "$HOOKS_DIR/_common"
+
+# 1) The repo's OWN pre-commit runs first and still blocks if it means to — we are additive.
+chain_repo_hook "$HOOK_NAME" "$@" || exit $?
+
+# 2) Clear any leftover verdict BEFORE the opt-out check — otherwise disabling the gate would strand
+# a marker that post-commit later reads as a clean bill of health for an unreviewed commit.
+GITDIR_EARLY="$(git rev-parse --absolute-git-dir 2>/dev/null)" && rm -f "$GITDIR_EARLY/llm-review-verdict"
+
+# 3) Opt-in gate. Unset/false → nothing to do.
+[ "$(git config --bool review.llmPrecommit 2>/dev/null)" = "true" ] || exit 0
+llm_review_disabled && exit 0
+llm_review_mid_sequence && exit 0
+
+GITDIR="$(git rev-parse --absolute-git-dir 2>/dev/null)" || exit 0
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+rm -f "$GITDIR/llm-review-verdict"
+
+# Nothing staged (e.g. `git commit --amend --no-edit` with no changes) → nothing to review. Leave a
+# marker saying so: without one, post-commit cannot tell "the gate found nothing to do" apart from
+# "the gate was skipped", and would log a bypass that never happened.
+if git diff --cached --quiet; then
+  printf 'nothing-to-review\t%s\n' "$(git rev-parse --verify --quiet HEAD || echo ROOT)" > "$GITDIR/llm-review-verdict"
+  exit 0
+fi
+
+llm_review_env
+if ! command -v llm-review >/dev/null 2>&1; then
+  if [ "$(git config --bool review.llmPrecommitStrict 2>/dev/null)" = "false" ]; then
+    echo "! llm-review is not on PATH — commit allowed (strict mode off)" >&2
+    # Record WHY. Without a marker, post-commit sees none and logs this sanctioned skip as a
+    # "--no-verify bypass", which is the wrong story in the one log that is supposed to be accurate.
+    printf 'not-installed\t%s\n' "$(git rev-parse --verify --quiet HEAD || echo ROOT)" > "$GITDIR/llm-review-verdict"
+    exit 0
+  fi
+  echo "" >&2
+  echo "x COMMIT BLOCKED — llm-review is not installed on this machine, so the change cannot be reviewed." >&2
+  echo "  Install it:  curl -fsSL https://raw.githubusercontent.com/Sathish889/reviewer/main/install.sh | bash -s -- --enforce" >&2
+  echo "  Or allow unreviewed commits:  git config --global review.llmPrecommitStrict false" >&2
+  echo "  Or bypass once:  git commit --no-verify" >&2
+  exit 1
+fi
+
+# Token profile for the gate. 'balanced' = mid-tier model, all four review mandates, <=6 provider
+# calls. Override per repo with:  git config review.llmBudget minimal|balanced|thorough
+BUDGET="$(git config review.llmBudget 2>/dev/null || echo balanced)"
+echo "> llm-review — reviewing the staged change before committing (budget: $BUDGET, Ctrl-C aborts the commit)"
+REVIEW_FAIL_ON=high LLM_REVIEW_MODE=staged LLM_REVIEW_BUDGET="${LLM_REVIEW_BUDGET:-$BUDGET}" llm-review "$ROOT"
+st=$?
+
+STRICT=1
+[ "$(git config --bool review.llmPrecommitStrict 2>/dev/null)" = "false" ] && STRICT=0
+
+case "$st" in
+  0) : ;;                       # reviewed, nothing at or above the threshold
+  2)
+    echo "" >&2
+    echo "x COMMIT BLOCKED — high-severity findings above." >&2
+    echo "  Fix them and commit again, or bypass with:  git commit --no-verify" >&2
+    echo "  (a bypass is recorded in $(llm_review_ledger_dir)/bypass.log)" >&2
+    exit 1 ;;
+  3)
+    if [ "$STRICT" = "1" ]; then
+      echo "" >&2
+      echo "x COMMIT BLOCKED — the review could NOT be completed, so this change is UNVERIFIED." >&2
+      echo "  Retry, or allow unverified commits:  git config --global review.llmPrecommitStrict false" >&2
+      echo "  Or bypass once:  git commit --no-verify" >&2
+      exit 1
+    fi
+    echo "" >&2
+    echo "! llm-review did NOT finish — this commit was NOT fully reviewed (strict mode off, allowing it)." >&2
+    printf 'incomplete\t%s\n' "$(git rev-parse --verify --quiet HEAD || echo ROOT)" > "$GITDIR/llm-review-verdict"
+    exit 0 ;;
+  *)
+    # ANY other status means the reviewer did not follow its own contract — a crash, a missing
+    # interpreter, a killed process. An unrecognised exit code is the one case where assuming success
+    # is least defensible, so it is treated exactly like "could not verify", never like a pass.
+    echo "" >&2
+    echo "x llm-review exited unexpectedly (status $st) — this change is UNVERIFIED." >&2
+    if [ "$STRICT" = "1" ]; then
+      echo "  Commit blocked. Retry, or: git config --global review.llmPrecommitStrict false / git commit --no-verify" >&2
+      exit 1
+    fi
+    echo "  Allowing the commit (strict mode off), but it was NOT reviewed." >&2
+    printf 'incomplete\t%s\n' "$(git rev-parse --verify --quiet HEAD || echo ROOT)" > "$GITDIR/llm-review-verdict"
+    exit 0 ;;
+esac
+
+# Passed. Leave a marker so post-commit can stamp the resulting SHA into the review ledger — that is
+# what lets pre-push tell a reviewed commit from one that slipped past with --no-verify.
+# Stamped with the commit this review was performed ON TOP OF. post-commit checks that the new
+# commit's parent matches; otherwise the marker is a leftover from an aborted commit and certifies
+# nothing. Without that check a stale marker would mark a later, unreviewed commit as reviewed.
+printf 'reviewed\t%s\n' "$(git rev-parse --verify --quiet HEAD || echo ROOT)" > "$GITDIR/llm-review-verdict"
+exit 0

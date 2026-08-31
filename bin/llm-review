@@ -1,13 +1,30 @@
 #!/usr/bin/env bash
-# llm-review — on-demand, Claude-backed code review of your changes.
-# Run it from inside any git repo, from a parent folder containing a single repo, or pass a path:
-#     llm-review [path] [baseRef]
-#   - no baseRef: reviews uncommitted+staged changes (else unpushed commits, else vs origin default branch)
-#   - baseRef:    reviews <baseRef>...HEAD  (what a pre-push hook is about to push)
-# Advisory only — prints findings, changes nothing, always exits 0-ish (never blocks a push).
+# llm-review — multi-engine AI code review of your changes.
 #
-# Needs: the `claude` CLI + a modern `node` on PATH. If your `node` lives under a version manager
-# (nvm/asdf/volta), point LLM_REVIEW_NODE_BIN at that bin dir (e.g. export it in your shell profile).
+#   llm-review [path] [baseRef] [tipRef] [--staged] [--lenses a,b] [--fast] [--block] [--report FILE]
+#
+# Run it from inside any git repo, from a parent folder containing a single repo, or pass a path.
+#   no baseRef      review uncommitted + staged + untracked changes (else unpushed commits, else vs origin default)
+#   baseRef [tipRef] review <baseRef>...<tipRef>; tipRef defaults to HEAD. A pre-push hook passes the
+#                   ref being pushed, which is often not the branch that is checked out.
+#   --staged        review ONLY the staged tree (index vs HEAD) — what a commit would contain
+#   --budget NAME   token profile: minimal | balanced (default) | thorough
+#                     minimal   haiku,  <=2 provider calls, one combined reviewer, no adjudication
+#                     balanced  sonnet, <=4 calls, two reviewers covering all four mandates
+#                     thorough  opus,   <=8 calls, four separate reviewers + adjudication
+#   --minimal       shorthand for --budget minimal   (aliases: --fast, --cheap)
+#   --thorough      shorthand for --budget thorough
+#   --max-calls N   hard ceiling on provider calls for this run
+#   --lenses LIST   reviewers to run: correctness,security,structure,qa,code,risk,full
+#   --block         exit 2 on high-severity findings / 3 if the review could not complete (for gates & CI)
+#   --report FILE   also write a machine-readable JSON report
+#   --status        show what is installed and how the gates are configured
+#
+# Advisory by default: prints findings, changes nothing, exits 0. Only --block (or REVIEW_FAIL_ON) makes
+# the exit code meaningful.
+#
+# Needs: a reviewer CLI (`claude` with ANTHROPIC_API_KEY, and/or `gemini` with GEMINI_API_KEY) + `node`.
+# If node lives under a version manager (nvm/asdf/volta/fnm), point LLM_REVIEW_NODE_BIN at that bin dir.
 set -euo pipefail
 
 # Prepend an optional node bin dir (version managers) so the right node is found.
@@ -22,11 +39,58 @@ while [ -h "$SOURCE" ]; do
 done
 DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
 ENGINE="$DIR/../lib/llm-diff-review.mjs"
+
+ARGS=()
+PASS=()
+BLOCK=0
+
+# Take the value belonging to a flag, or fail loudly. Blindly shifting meant three things went wrong:
+# a missing value swallowed the NEXT FLAG (so `--max-calls --thorough` set the ceiling to the string
+# "--thorough", and Number() of that is NaN — every `callsMade >= NaN` is false, so the call ceiling
+# silently stopped existing); a value flag in last position hit `shift` with no args and `set -e`
+# aborted with a bare shell error; and `--budget --staged` quietly ate the mode flag.
+need_value() {   # need_value <flag> <next-token-or-empty>
+  case "${2-}" in
+    ''|-*) echo "llm-review: $1 needs a value" >&2; exit 2 ;;
+    *) printf '%s' "$2" ;;
+  esac
+}
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --staged)  PASS+=("--staged") ;;
+    --fast|--cheap|--minimal) export LLM_REVIEW_BUDGET=minimal ;;
+    --thorough) export LLM_REVIEW_BUDGET=thorough ;;
+    --budget) LLM_REVIEW_BUDGET="$(need_value --budget "${2-}")"; export LLM_REVIEW_BUDGET; shift ;;
+    --budget=*) export LLM_REVIEW_BUDGET="${1#*=}" ;;
+    --max-calls)
+      REVIEW_MAX_CALLS="$(need_value --max-calls "${2-}")"
+      case "$REVIEW_MAX_CALLS" in ''|*[!0-9]*|0) echo "llm-review: --max-calls needs a positive integer" >&2; exit 2 ;; esac
+      export REVIEW_MAX_CALLS; shift ;;
+    --max-calls=*) export REVIEW_MAX_CALLS="${1#*=}" ;;
+    --lenses) LLM_REVIEW_LENSES="$(need_value --lenses "${2-}")"; export LLM_REVIEW_LENSES; shift ;;
+    --lenses=*) export LLM_REVIEW_LENSES="${1#*=}" ;;
+    --report) LLM_REVIEW_REPORT="$(need_value --report "${2-}")"; export LLM_REVIEW_REPORT; shift ;;
+    --report=*) export LLM_REVIEW_REPORT="${1#*=}" ;;
+    --block)   BLOCK=1 ;;
+    --status)  exec "$DIR/../install.sh" --status ;;
+    -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$SOURCE"; exit 0 ;;
+    -*)        echo "llm-review: unknown flag $1 (try --help)" >&2; exit 2 ;;
+    *)         ARGS+=("$1") ;;
+  esac
+  shift
+done
+[ "$BLOCK" = "1" ] && export REVIEW_FAIL_ON="${REVIEW_FAIL_ON:-high}"
+
 [ -f "$ENGINE" ] || { echo "llm-review: engine not found at $ENGINE"; exit 1; }
 
-command -v node >/dev/null 2>&1 || { echo "llm-review: node not found on PATH (set LLM_REVIEW_NODE_BIN?) — skipping"; exit 0; }
+# A missing node must NOT read as "reviewed and clean" to a gate. Exit 3 = could not verify.
+if ! command -v node >/dev/null 2>&1; then
+  echo "llm-review: node not found on PATH (set LLM_REVIEW_NODE_BIN?) — NOT reviewed" >&2
+  [ -n "${REVIEW_FAIL_ON:-}" ] && exit 3
+  exit 0
+fi
 
-target="${1:-$PWD}"
+target="${ARGS[0]:-$PWD}"
 root="$(git -C "$target" rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "$root" ]; then
   # target isn't a git repo — look one level down for a single git repo
@@ -36,5 +100,5 @@ if [ -z "$root" ]; then
 fi
 [ -n "$root" ] || { echo "llm-review: no git repo at or directly under: $target"; exit 1; }
 
-echo "▶ LLM review of: $root"
-node "$ENGINE" "$root" "${2:-}"
+echo "> LLM review of: $root"
+exec node "$ENGINE" "$root" "${ARGS[1]:-}" "${ARGS[2]:-}" ${PASS[@]+"${PASS[@]}"}

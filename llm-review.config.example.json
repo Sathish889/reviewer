@@ -1,5 +1,5 @@
 {
-  "//": "Copy this to llm-review.config.json (gitignored) and edit. ALL fields are optional — with no config the tool auto-detects a provider and reviews the one repo.",
+  "//": "Copy this to ~/.config/llm-review/config.json and edit. NOTE: inside a reviewed repo, only excludes/lenses/budget are honoured from a committed config — provider/model/providers/crossRepo/requirementsFile are read only from the user-level config or the env, because a repo ships its own config to whoever clones it. ALL fields are optional — with no config the tool auto-detects a provider and reviews the one repo.",
 
   "//provider": "Which AI backend to use: \"claude\" (needs the `claude` CLI + ANTHROPIC_API_KEY) or \"gemini\" (needs the `gemini` CLI + GEMINI_API_KEY). Omit to auto-detect (claude, then gemini). Env override: LLM_REVIEW_PROVIDER.",
   "provider": "claude",
@@ -12,6 +12,20 @@
     "claude": { "bin": "claude", "model": "opus", "extraArgs": [] },
     "gemini": { "bin": "gemini", "model": "gemini-2.5-pro", "extraArgs": [] }
   },
+
+  "//lenses": "MULTI-ENGINE. Setting this OVERRIDES the budget profile\u0027s reviewer pairing, so leave it unset unless you mean it (the key below is deliberately commented out). Which reviewers to run over each chunk, in PARALLEL. Each is a focused persona with its own mandate, so one bot's blind spot is covered by another. Default: whatever the budget profile pairs them into (balanced runs two composite reviewers covering all four mandates; minimal runs one). Setting this overrides that. Use [\"full\"] for a single combined pass (cheaper, shallower). Env override: LLM_REVIEW_LENSES=correctness,security,structure,qa (or 'full').",
+  "//lenses-example": ["correctness", "security", "structure", "qa"],
+
+  "//multi-provider": "When BOTH the `claude` and `gemini` CLIs are installed, the lenses are round-robined across them, so two genuinely different models cross-check the same diff. Nothing to configure — install the second CLI and it is used automatically. Force a single one with LLM_REVIEW_PROVIDER.",
+
+  "//adjudication": "After merging, a second engine re-checks every finding against the real code and drops the ones it can refute. Runs automatically when a gate is armed and something would block. Force on/off with LLM_REVIEW_ADJUDICATE=1|0.",
+
+  "//budget": "TOKEN CONTROLLER. Profile: \"minimal\" (haiku, <=2 calls), \"balanced\" (sonnet, <=4 calls, DEFAULT) or \"thorough\" (opus, <=8 calls). The profile picks the MODEL TIER, the call ceiling, the reviewer's tool-call allowance and the findings cap. Env override: LLM_REVIEW_BUDGET. Per-repo: git config review.llmBudget <profile>.",
+  "budget": "balanced",
+
+  "//model-pin-warning": "Setting \"model\" here, or providers.<name>.model, OVERRIDES the profile's tier — a pinned \"opus\" makes every profile bill at the top tier. Leave both unset unless you mean it; the tool warns when a pin overrides a cheaper profile.",
+
+  "//speed": "Further env knobs, all optional: REVIEW_MAX_CALLS (hard ceiling), REVIEW_TOOL_BUDGET (Read/Grep calls the reviewer may make), REVIEW_MAX_FINDINGS (output cap), REVIEW_MAX_PROMPT_CHARS (per-call prompt ceiling), REVIEW_TIMEOUT_MS (420000 — a killed call is wasted tokens), REVIEW_DEADLINE_MS (1200000), REVIEW_PROSE_CAP (40000 per markdown/txt document), LLM_REVIEW_CONCURRENCY.",
 
   "//requirementsFile": "Optional path (relative to the repo) to a requirements/spec file. The reviewer verifies the change SATISFIES it and flags anything unmet. Also auto-detected: REQUIREMENTS.md / docs/REQUIREMENTS.md. Env override: LLM_REVIEW_REQUIREMENTS (a path OR inline text).",
   "requirementsFile": "docs/REQUIREMENTS.md",
