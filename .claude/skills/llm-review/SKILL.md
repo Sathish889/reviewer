@@ -43,6 +43,22 @@ Halving the chunk size does not halve the cost — it doubles how many times you
 
 An absolute ceiling of 4 applies to everything except `--thorough` and an explicit `--max-calls`.
 
+## Style
+
+The reviewer enforces the author's own conventions, not generic ones. The profile is inferred from
+code they already wrote (`llm-review --learn-style <dirs> --write`, zero tokens) and read from, in
+increasing precedence: `.editorconfig` (repo) → `~/.config/llm-review/style.json` → `config.style`.
+The user's config beats the repo's, and a repo `STYLE.md` is untrusted data that is skipped outright
+when a gate is armed.
+
+Line length, indentation and trailing whitespace are checked **in code**, on added lines only — a
+regex counts characters perfectly and for free, so never spend a provider call on it. Only the part a
+regex cannot judge (does this look like the surrounding files?) goes to the model, and it rides along
+in an existing pass rather than taking a call of its own.
+
+Style findings default to `low` so they never block a commit. Do not raise that default: a gate that
+blocks on formatting is a gate people switch off.
+
 ## Running it
 
 ```bash

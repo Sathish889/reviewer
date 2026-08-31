@@ -1,0 +1,15 @@
+# The reviewer reads this too (see README, "Your style"), so it is the single place this repo's
+# formatting intent lives — editors and llm-review agree by construction.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+max_line_length = 100
+
+[*.md]
+max_line_length = off

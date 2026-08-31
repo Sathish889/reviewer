@@ -52,6 +52,7 @@ llm-review --fast                 # one combined pass instead of four
 llm-review --block                # exit 2 on high findings, 3 if the review could not complete (CI)
 llm-review --report out.json      # machine-readable findings
 llm-review --status               # installation and gate status
+llm-review --learn-style DIR...  # infer your style profile from existing code (no tokens)
 ```
 
 ---
@@ -98,6 +99,51 @@ real code and drops the ones it can refute, so false positives do not block your
 automatically whenever a gate is armed and something would block.
 
 ---
+
+## Your style, not a generic one
+
+The reviewer will hold a change to **your** conventions — short lines especially — and say what to
+change, not just that something is wrong. Two things make that work.
+
+**It learns your style from code you already wrote.** No guessing, no filling in a form:
+
+```bash
+llm-review --learn-style ~/Documents/*/          # read your projects, show what it infers
+llm-review --learn-style ~/Documents/*/ --write  # save to ~/.config/llm-review/style.json
+```
+
+It takes the 95th percentile of your line lengths (a limit set at your longest line is no limit; one
+at your median flags half of what you already wrote), your actual indentation, and how long your
+functions and files really run. Minified and generated files are skipped so one bundle can't drag the
+numbers. This costs **no tokens** — it is arithmetic over files on disk.
+
+**Line-length and whitespace checks run in code, not in the model.** A regex counts characters
+perfectly and for free; asking a model to do it is slower, dearer and less reliable. So long lines,
+tabs-vs-spaces and trailing whitespace are found deterministically on **added lines only**, and never
+consume a provider call. What the model handles is the part a regex can't: whether the change *looks
+like the rest of your code* — naming, file layout, import order, error-handling idiom, guard clauses
+over nesting — checked against a neighbouring file and reported with the file that shows the
+convention.
+
+Where the profile comes from, each layer overriding the one before: built-in defaults →
+**`.editorconfig`** in the repo (the standard place, and your editor already honours it) →
+**`~/.config/llm-review/style.json`** → **`config.style`**. Your own config wins over the repo's,
+because `.editorconfig` arrives with a clone and your settings don't.
+
+A `STYLE.md` in the repo can carry conventions a schema can't express ("guard clauses over nesting",
+"no barrel files"). It is passed to the reviewer as **untrusted data**, and skipped entirely when a
+gate is armed — a file that ships with the change must not be able to tell the gate what to think.
+
+```json
+{ "style": {
+    "maxLineLength": 100, "indent": "spaces", "indentWidth": 4,
+    "maxFunctionLines": 43, "maxFileLines": 479, "maxParams": 3,
+    "trailingWhitespace": false, "severity": "low" } }
+```
+
+**Style findings are `low` by default, so they never block a commit.** That is deliberate: a gate that
+blocks on formatting gets switched off, and then it protects nothing. If you do want them enforced,
+set `"severity": "medium"` and gate at medium — style then blocks exactly like a logic gap does.
 
 ## How the gates work
 
@@ -248,6 +294,7 @@ overrides the profile's cheaper tier, it says so instead of letting the cost hid
 | `REVIEW_MAX_PROMPT_CHARS` | `300000` |
 | `REVIEW_MAX_CHUNKS` | `40` |
 | `REVIEW_FILE_CAP` | `250000` |
+| `LLM_REVIEW_STYLE` | `~/.config/llm-review/style.json` |
 | `LLM_REVIEW_CONCURRENCY` | cpus−2, max 6 |
 | `REVIEW_HARD_CEILING` | `4` |
 

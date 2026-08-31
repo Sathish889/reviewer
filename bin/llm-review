@@ -19,6 +19,10 @@
 #   --block         exit 2 on high-severity findings / 3 if the review could not complete (for gates & CI)
 #   --report FILE   also write a machine-readable JSON report
 #   --status        show what is installed and how the gates are configured
+#   --learn-style [path...] [--write]
+#                   read code you have already written and infer YOUR style profile (line length,
+#                   indentation, function/file length). --write saves it to
+#                   ~/.config/llm-review/style.json. Costs no tokens.
 #
 # Advisory by default: prints findings, changes nothing, exits 0. Only --block (or REVIEW_FAIL_ON) makes
 # the exit code meaningful.
@@ -73,6 +77,7 @@ while [ $# -gt 0 ]; do
     --report=*) export LLM_REVIEW_REPORT="${1#*=}" ;;
     --block)   BLOCK=1 ;;
     --status)  exec "$DIR/../install.sh" --status ;;
+    --learn-style) shift; exec node "$DIR/../lib/learn-style.mjs" "$@" ;;
     -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$SOURCE"; exit 0 ;;
     -*)        echo "llm-review: unknown flag $1 (try --help)" >&2; exit 2 ;;
     *)         ARGS+=("$1") ;;

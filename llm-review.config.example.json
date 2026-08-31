@@ -27,6 +27,19 @@
 
   "//speed": "Further env knobs, all optional: REVIEW_MAX_CALLS (hard ceiling), REVIEW_TOOL_BUDGET (Read/Grep calls the reviewer may make), REVIEW_MAX_FINDINGS (output cap), REVIEW_MAX_PROMPT_CHARS (per-call prompt ceiling), REVIEW_TIMEOUT_MS (420000 — a killed call is wasted tokens), REVIEW_DEADLINE_MS (1200000), REVIEW_PROSE_CAP (40000 per markdown/txt document), LLM_REVIEW_CONCURRENCY.",
 
+  "//style": "YOUR conventions. Run `llm-review --learn-style <dirs> --write` to infer these from code you have already written rather than picking numbers by hand. Read from .editorconfig first, then ~/.config/llm-review/style.json, then here. A STYLE.md in the repo is passed to the reviewer verbatim for rules a schema cannot express. Line-length/indent/trailing-whitespace are checked in CODE (no tokens); the model judges consistency with the surrounding files.",
+  "style": {
+    "maxLineLength": 100,
+    "indent": "spaces",
+    "indentWidth": 4,
+    "maxFunctionLines": 43,
+    "maxFileLines": 479,
+    "maxParams": 3,
+    "trailingWhitespace": false,
+    "//severity": "How hard to push. 'low' (default) means style never blocks a commit — a gate that blocks on formatting gets switched off. Set 'medium' and gate at medium to enforce it.",
+    "severity": "low"
+  },
+
   "//requirementsFile": "Optional path (relative to the repo) to a requirements/spec file. The reviewer verifies the change SATISFIES it and flags anything unmet. Also auto-detected: REQUIREMENTS.md / docs/REQUIREMENTS.md. Env override: LLM_REVIEW_REQUIREMENTS (a path OR inline text).",
   "requirementsFile": "docs/REQUIREMENTS.md",
 
