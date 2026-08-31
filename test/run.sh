@@ -391,10 +391,17 @@ TRUNC_OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" 
 is "style is measured before truncation"          "$(printf '%s' "$TRUNC_OUT" | grep -c 'wide.js.*your limit is 40')" 1
 rm -f "$WORK/repo/wide.js"; git -C "$WORK/repo" add -A
 
-# A finding the model TAGS as style is capped at the profile severity, however it rated itself.
-mkfake 'echo "- app.js:1 :: [style] this line is shaped oddly (high)"'
+# A tagged style finding BELOW the gate threshold is capped to the profile severity and labelled.
+mkfake 'echo "- app.js:1 :: [style] this line is shaped oddly (medium)"'
 is "a tagged style finding is capped, not blocking" "$(run REVIEW_FAIL_ON=high LLM_REVIEW_STYLE="$WORK/style.json")" 0
 is "  ...and is labelled in the output"           "$(grep -c '\[style\]' "$WORK/out")" 1
+# But a [style] tag must not be a way to demote a BLOCKING finding: the tag comes from a prompt that
+# contains the author's own diff, so an injected prefix could otherwise unlock the gate.
+mkfake 'echo "- app.js:1 :: [style] auth bypass dressed up as a formatting note (high)"'
+is "a tag cannot clear a blocking finding"        "$(run REVIEW_FAIL_ON=high LLM_REVIEW_STYLE="$WORK/style.json")" 2
+is "  ...and the refusal is visible"              "$(grep -c 'a tag cannot clear a blocking finding' "$WORK/out")" 1
+# With no gate armed there is nothing to unlock, so the cap applies as intended.
+is "  ...but advisory runs still cap it"          "$(run LLM_REVIEW_STYLE="$WORK/style.json")" 0
 
 # A real high finding that merely mentions the word "style" must keep its severity.
 mkfake 'echo "- app.js:1 :: auth bypass: the style guide is irrelevant here, this endpoint has no check (high)"'

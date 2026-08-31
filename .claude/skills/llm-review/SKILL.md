@@ -83,6 +83,14 @@ PATH=/tmp/fake:$PATH REVIEW_FAIL_ON=high node lib/llm-diff-review.mjs /path/to/r
 Have the fake `exit 1`, print prose, print `CLEAN`, or `sleep` past the timeout to exercise each path.
 Assert on the **exit code**: `0` clean, `2` findings at/above threshold, `3` could not verify.
 
+## The one rule
+
+**Nothing derived from model output may move a finding from blocking to non-blocking.** Every signal
+comes from a prompt containing the author's diff, so anything able to lower severity across the gate
+threshold makes the gate openable by a crafted comment. Raising severity is noise; lowering it is a
+false pass. This governs the adjudicator, the [style] tag and the injection tripwire. Do not add a
+fourth mechanism that violates it.
+
 ## Invariants that must never regress
 
 - A review that did not happen must never print `CLEAN` or exit `0` under a gate. No reviewer

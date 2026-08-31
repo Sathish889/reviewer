@@ -158,6 +158,23 @@ problems that only appear across commits. Every pushed ref is reviewed — pushi
 reviews both. The first push of a brand-new repository is reviewed against the empty tree rather than
 skipped.
 
+### One rule behind the gate
+
+> **Nothing derived from model output may move a finding from blocking to non-blocking.**
+
+Every signal in this tool comes from a prompt that contains the author's own diff. If any of them could
+*lower* a finding's severity across the gate threshold, the gate would be openable by a crafted
+comment. Raising severity only produces noise; lowering it produces a false clean bill of health. So:
+
+- the **adjudicator** may drop or downgrade findings below the threshold, never one at or above it —
+  a disputed blocking finding is marked and still blocks
+- a **`[style]` tag** caps a finding at your style severity below the threshold, never across it
+- the **injection tripwire** blocks regardless of what any model concluded
+
+Each of those was a separate bug before it was one rule. The cost is that a false-positive high finding
+blocks and the tool cannot clear it — you are the appeal mechanism, via a fix or `--no-verify` (which
+is recorded). That is the right way round: a gate a comment can open is not a gate.
+
 ### Exit codes
 
 `0` reviewed and clean · `2` findings at or above the threshold · `3` **the review could not
