@@ -19,7 +19,9 @@
 # Re-runnable and idempotent: existing global hooks are backed up before being replaced.
 set -euo pipefail
 
-REPO_URL="${LLM_REVIEW_REPO:-https://github.com/Sathish889/reviewer.git}"
+REPO_SLUG="${LLM_REVIEW_SLUG:-Sathish889/reviewer}"
+REPO_URL="${LLM_REVIEW_REPO:-https://github.com/${REPO_SLUG}.git}"
+REF="${LLM_REVIEW_REF:-main}"          # pin a tag, branch or sha for a reproducible install
 BIN_DIR="${LLM_REVIEW_BIN:-$HOME/.local/bin}"
 SRC_DIR="${LLM_REVIEW_HOME:-$HOME/.local/share/llm-review}"
 HOOKS_DEST="${LLM_REVIEW_HOOKS_DIR:-$HOME/.config/git/hooks}"
@@ -144,15 +146,97 @@ if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/lib/llm-diff-review.mjs" ]; then
   DIR="$SELF_DIR"
   say "• installing from local checkout: $DIR"
 else
-  command -v git >/dev/null 2>&1 || { echo "x git is required for the one-liner install"; exit 1; }
-  if [ -d "$SRC_DIR/.git" ]; then
-    say "• updating existing copy: $SRC_DIR"
-    git -C "$SRC_DIR" pull --ff-only --quiet || warn "could not fast-forward — using the copy on disk"
-  else
-    say "• cloning $REPO_URL -> $SRC_DIR"
-    mkdir -p "$(dirname "$SRC_DIR")"
-    git clone --depth 1 --quiet "$REPO_URL" "$SRC_DIR"
+  # Download a TARBALL, not a clone. A clone needs git installed, drags a .git directory onto every
+  # machine, and leaves the install looking like a working copy someone might commit into by mistake.
+  # A tarball needs only curl and tar, which any machine that ran the one-liner already has.
+  #
+  # LLM_REVIEW_REF pins what is fetched (tag, branch or sha). LLM_REVIEW_TARBALL points the download
+  # at a mirror, proxy or file:// path. LLM_REVIEW_REPO overrides the repo, and the slug is derived
+  # from it so that setting one does not leave the other pointing at the default.
+  case "$REPO_URL" in
+    *github.com[:/]*)
+      DERIVED="${REPO_URL#*github.com}"; DERIVED="${DERIVED#[:/]}"
+      REPO_SLUG="${DERIVED%.git}" ;;
+  esac
+  TARBALL="${LLM_REVIEW_TARBALL:-https://codeload.github.com/${REPO_SLUG}/tar.gz/${REF}}"
+
+  TMP="$(mktemp -d)"
+  NEW="$TMP/payload"; mkdir -p "$NEW"
+  trap 'rm -rf "$TMP"' EXIT
+  say "• downloading ${REPO_SLUG}@${REF}"
+
+  fetched=0
+  if command -v curl >/dev/null 2>&1; then
+    # --no-same-owner so a hostile archive cannot ask for ownership it should not get. Extraction goes
+    # into a scratch directory that is validated below before anything replaces the real install.
+    if curl -fsSL "$TARBALL" \
+       | tar xz -C "$NEW" --strip-components=1 --no-same-owner 2>/dev/null; then
+      fetched=1
+    fi
   fi
+  if [ "$fetched" = "0" ] && command -v git >/dev/null 2>&1; then
+    warn "download failed — falling back to git"
+    rm -rf "$NEW"; mkdir -p "$NEW"                       # never merge into a half-extracted payload
+    if [ -n "${LLM_REVIEW_REF:-}" ]; then
+      # A pinned ref is a promise about WHAT gets installed. Falling back to the default branch when
+      # the ref cannot be fetched would install something else and still report success, which is
+      # worse than failing: the install looks reproducible and is not.
+      git clone --depth 1 --quiet --branch "$REF" "$REPO_URL" "$NEW/clone" || {
+        echo "x could not fetch ref '$REF' — refusing to install a different version instead."
+        echo "  Check the tag/branch/sha exists, or unset LLM_REVIEW_REF for the default branch."
+        exit 1
+      }
+    else
+      git clone --depth 1 --quiet "$REPO_URL" "$NEW/clone" \
+        || { echo "x git clone failed"; exit 1; }
+    fi
+    rm -rf "$NEW/clone/.git"
+    (cd "$NEW/clone" && tar cf - .) | (cd "$NEW" && tar xf -)
+    rm -rf "$NEW/clone"
+    fetched=1
+  fi
+  [ "$fetched" = "1" ] || { echo "x could not download: need either curl or git on PATH"; exit 1; }
+
+  # VALIDATE before trusting it. The download source is env-overridable and unsigned, so treat the
+  # payload as untrusted input: it must contain the files we expect, and it must not contain a symlink
+  # that points outside itself (the classic way an archive writes somewhere it was never given).
+  for want in lib/llm-diff-review.mjs bin/llm-review install.sh hooks/_chain; do
+    [ -f "$NEW/$want" ] || { echo "x download looks wrong — $want is missing"; exit 1; }
+  done
+  while IFS= read -r link; do
+    target="$(readlink "$link")"
+    case "$target" in
+      /*|*..*)
+        echo "x refusing this download: $link points outside the payload ($target)"
+        exit 1 ;;
+    esac
+  done < <(find "$NEW" -type l 2>/dev/null)
+
+  # SWAP, keeping the old copy until the new one is in place. Removing the old install before the move
+  # is confirmed means a failure at that moment leaves no install at all.
+  mkdir -p "$(dirname "$SRC_DIR")"
+  OLD=""
+  if [ -d "$SRC_DIR" ]; then
+    # The user's config is gitignored and machine-local; replacing the directory would throw away
+    # their provider, cross-repo and style settings.
+    [ -f "$SRC_DIR/llm-review.config.json" ] \
+      && cp "$SRC_DIR/llm-review.config.json" "$TMP/keep-config"
+    OLD="$SRC_DIR.previous.$$"
+    mv "$SRC_DIR" "$OLD" || {
+      echo "x could not move the existing install aside — leaving it untouched"; exit 1
+    }
+  fi
+  if ! mv "$NEW" "$SRC_DIR"; then
+    echo "x could not install to $SRC_DIR"
+    [ -n "$OLD" ] && mv "$OLD" "$SRC_DIR" && echo "  restored the previous install"
+    exit 1
+  fi
+  [ -n "$OLD" ] && rm -rf "$OLD"
+  if [ -f "$TMP/keep-config" ]; then
+    mv "$TMP/keep-config" "$SRC_DIR/llm-review.config.json"
+    say "  kept your existing llm-review.config.json"
+  fi
+  rm -rf "$TMP"; trap - EXIT
   DIR="$SRC_DIR"
 fi
 

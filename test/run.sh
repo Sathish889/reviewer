@@ -551,6 +551,41 @@ is "a two-ref push accounts for both refs"        "$(grep -Eo 'br1|br2' "$H/push
 is "  ...br1 is accounted for"                    "$(grep -c 'br1' "$H/push.out" | awk '{print ($1>0)?"yes":"no"}')" yes
 is "  ...br2 is accounted for"                    "$(grep -c 'br2' "$H/push.out" | awk '{print ($1>0)?"yes":"no"}')" yes
 
+echo "installer — the download is treated as untrusted input"
+IT="$WORK/inst"; mkdir -p "$IT"
+( cd "$KIT" && git archive --format=tar.gz --prefix=r/ HEAD > "$IT/good.tar.gz" ) 2>/dev/null
+inst(){ env GIT_CONFIG_GLOBAL="$IT/gc" LLM_REVIEW_TARBALL="$1" LLM_REVIEW_BIN="$IT/bin" \
+        LLM_REVIEW_HOME="$IT/src" LLM_REVIEW_HOOKS_DIR="$IT/hooks" LLM_REVIEW_STATE="$IT/state" \
+        LLM_REVIEW_SCAN_DIRS="$IT/scan" bash -c "cat '$KIT/install.sh' | bash" 2>&1; }
+if [ -s "$IT/good.tar.gz" ]; then
+  inst "file://$IT/good.tar.gz" >/dev/null 2>&1
+  is "a tarball install lands the engine"         "$([ -f "$IT/src/lib/llm-diff-review.mjs" ] && echo yes || echo no)" yes
+  is "  ...and leaves no .git behind"             "$([ -d "$IT/src/.git" ] && echo left || echo clean)" clean
+  # An upgrade must not throw away settings the user edited by hand.
+  echo '{"//mine":"hand written"}' > "$IT/src/llm-review.config.json"
+  inst "file://$IT/good.tar.gz" >/dev/null 2>&1
+  is "an upgrade keeps the user's config"         "$(grep -c 'hand written' "$IT/src/llm-review.config.json")" 1
+  # A payload missing what it should contain must be refused, and the working install left alone.
+  mkdir -p "$IT/bad/r/lib"; echo x > "$IT/bad/r/lib/llm-diff-review.mjs"
+  ( cd "$IT/bad" && tar czf "$IT/bad.tar.gz" r )
+  is "an incomplete payload is refused"          "$(inst "file://$IT/bad.tar.gz" | grep -c 'download looks wrong')" 1
+  is "  ...and the old install survives"          "$([ -f "$IT/src/bin/llm-review" ] && echo yes || echo destroyed)" yes
+  # A symlink pointing out of the payload is how an archive writes where it was never given access.
+  rm -rf "$IT/evil"; mkdir -p "$IT/evil/r"
+  ( cd "$IT/evil/r" && tar xzf "$IT/good.tar.gz" --strip-components=1 && ln -s /etc/passwd pwned )
+  ( cd "$IT/evil" && tar czf "$IT/evil.tar.gz" r )
+  is "a symlink escaping the payload is refused" "$(inst "file://$IT/evil.tar.gz" | grep -c 'points outside the payload')" 1
+  is "  ...and the old install survives"          "$([ -f "$IT/src/bin/llm-review" ] && echo yes || echo destroyed)" yes
+  # A pinned ref is a promise; a fallback that installs something else would break it silently.
+  BADREF="$(env GIT_CONFIG_GLOBAL="$IT/gc" LLM_REVIEW_REF="v0.0.0-nope" \
+    LLM_REVIEW_TARBALL="file://$IT/nothing.tar.gz" \
+    LLM_REVIEW_BIN="$IT/bin" LLM_REVIEW_HOME="$IT/src9" LLM_REVIEW_HOOKS_DIR="$IT/hooks" \
+    LLM_REVIEW_STATE="$IT/state" LLM_REVIEW_SCAN_DIRS="$IT/scan" \
+    bash -c "cat '$KIT/install.sh' | bash" 2>&1; echo "rc=$?")"
+  is "an unfetchable pinned ref fails"            "$(printf '%s' "$BADREF" | grep -c 'refusing to install a different version')" 1
+  is "  ...and installs nothing"                  "$([ -d "$IT/src9" ] && echo installed || echo nothing)" nothing
+fi
+
 echo "installer — wiring other repos is opt-in, and reversible"
 OTHER="$H/scan/other"; mkdir -p "$OTHER/.githooks"; git -C "$OTHER" init -q .
 git -C "$OTHER" config core.hooksPath .githooks
