@@ -1,0 +1,15 @@
+{
+  "name": "llm-review-kit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reviews a diff with an LLM before it becomes a commit.",
+  "bin": { "llm-review": "bin/llm-review" },
+  "engines": { "node": ">=18.18" },
+  "scripts": {
+    "test": "bash test/run.sh",
+    "test:engine": "bash test/run.sh engine",
+    "test:chain": "bash test/run.sh chain",
+    "test:hooks": "bash test/run.sh hooks"
+  }
+}
