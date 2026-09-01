@@ -95,6 +95,7 @@ llm-review . <base> <tip>         # an explicit range
 | `--block` | exit `2` on high findings, `3` if the review could not complete — for CI |
 | `--report FILE` | write findings and spend as JSON |
 | `--learn-style DIR…` | infer your style profile from existing code (costs nothing) |
+| `--learn-miss "…"` | record something a downstream reviewer caught, so future reviews check for it |
 | `--status` | installation and gate status |
 
 ---
@@ -144,6 +145,72 @@ An **adjudicator** then re-checks every finding against the real code and drops 
 refute, so false positives do not accumulate.
 
 ---
+
+## Making sure nothing new turns up later
+
+The point of reviewing before a commit is that no reviewer downstream finds something afterwards. That
+splits into two problems with very different answers, and it is worth being straight about which is
+which.
+
+**Deterministic reviewers — solvable completely.** ESLint, `tsc`, SonarQube, CI checks. You do not ask
+a model to predict what ESLint will say; you run ESLint.
+
+- **Free built-in checks**, on added lines only, costing no provider call: unresolved
+  merge markers, `.only(`/`fdescribe` (CI goes green while running almost none of the suite), leaked
+  AWS/Slack/GitHub/Google/Stripe keys and private keys, `debugger` left in, skipped tests. These block
+  on their own severity regardless of what any model concluded — a regex that matched is not a
+  judgement a reviewer can talk itself out of. The same token inside a markdown file is documentation,
+  not a leak — but a *real* credential in a README is still a leak, so the secret checks run on prose
+  too while the code checks do not. Vendors' published placeholders (`AKIAIOSFODNN7EXAMPLE` and
+  friends) are never treated as live credentials, wherever they appear.
+
+  These are cheap and certain about *what they matched* — but a pattern can still express the wrong
+  thing, and four of these originally did: `fit(` matched every scikit-learn `model.fit(X, y)`,
+  `=======` matched any comment separator, Laravel's real `dd($var)` was missed, and AWS's own
+  documentation placeholder was reported as a leaked key. So there is an escape hatch, and it demands
+  a justification:
+
+  ```js
+  // llm-review-ignore-file: aws-key — fixtures for the secret-scanner tests
+  const k = "AKIA...";                    // whole file, one check
+
+  const k = "AKIA...";  // llm-review-ignore: aws-key — documented sample value
+  ```
+
+  **Every honoured suppression is reported on every run**, with its reason — a marker that silences a
+  check quietly is indistinguishable from the check not existing. And **a marker with no reason after
+  the em-dash is ignored and reported.** Silencing a check is a
+  decision someone should have to justify where the next reader sees it, and a suppression that
+  explains nothing is indistinguishable from switching the tool off.
+- **Preflight** runs the project's *own* checks before spending anything: `npm run lint`,
+  `typecheck`, `tsc --noEmit`, `ruff check`, `go vet`, or whatever you list in `config.preflight`. If
+  CI would fail, you find out from the same command with the same exit code, now.
+
+  ```bash
+  git config review.llmPreflight true        # this repo only — the safe default
+  git config --global review.llmPreflight true   # every repo, including ones you clone later
+  ```
+
+  **Off by default, deliberately.** These commands come from the repository — running them executes its
+  lint config, its plugins, its scripts — so an automatic hook doing it would hand a hostile clone code
+  execution. Prefer the **per-repo** form: the global one grants that trust to every repository you
+  will ever clone on the machine, which is a much larger promise than "I trust this project".
+
+**Judgement-based reviewers — not solvable, only shrinkable.** Another model, or a colleague, can
+always raise something this one did not. Nobody can promise otherwise.
+
+What can be stopped is the *same* miss happening twice:
+
+```bash
+llm-review --learn-miss "PR bot found an N+1 in the serializer; we only checked the query"
+```
+
+Every later review is then told to look for that class specifically and to say explicitly when it does
+not apply. This is the only training available short of fine-tuning, and it is worth more than it
+sounds, because real misses cluster — they are usually a gap in the mandate rather than bad luck. The
+record lives in `~/.config/llm-review/missed.md`, in your config rather than the repo: it is the
+reviewer's memory, not the project's, and a repo-supplied version would be a way to feed instructions
+into every prompt.
 
 ## Your code style, not a generic one
 

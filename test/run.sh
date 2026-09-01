@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # llm-review test suite — runs entirely OFFLINE against a fake provider.
+# llm-review-ignore-file: aws-key, slack-token, gh-token, focused-test, skipped-test — this suite
+# must contain the very patterns it checks for; they are fixtures, not real credentials.
 #
 # No API calls, no cost, no network. Every test puts a throwaway `claude` on PATH that prints whatever
 # the case needs (findings, prose, CLEAN, an error, or a hang) and asserts on the ENGINE's exit code:
@@ -463,6 +465,189 @@ crun "LLM_REVIEW_STYLE=$WORK/sk.json" >/dev/null
 is "the style profile is part of the key"         "$(crun "LLM_REVIEW_STYLE=$WORK/sk.json")" 0
 printf '{"style":{"maxLineLength":100,"maxFunctionLines":80}}' > "$WORK/sk.json"
 is "  ...so changing any field invalidates it"    "$([ "$(crun "LLM_REVIEW_STYLE=$WORK/sk.json")" -gt 0 ] && echo yes || echo no)" yes
+
+echo "engine — checks that cost nothing (though a pattern can still be wrong)"
+# The fake reports CLEAN, so every finding below came from code rather than a model.
+mkfake 'echo CLEAN'
+python3 - "$WORK/repo/awful.js" <<'EOF'
+import sys
+open(sys.argv[1],"w").write("\n".join([
+ "const fine = 1;",
+ "debugger",
+ 'describe.only("just this", () => {});',
+ 'it.skip("later", () => {});',
+ 'const k = "AKIAQWERTYUIOPASDFGH";',
+ "<<<<<<< HEAD",
+ "=======",
+ ">>>>>>> branch",
+]))
+EOF
+# The same token inside prose is documentation, not a leak.
+printf 'Example key: AKIAIOSFODNN7EXAMPLE\n' > "$WORK/repo/KEYS.md"
+git -C "$WORK/repo" add -A
+DET="$(run REVIEW_FAIL_ON=high; cat "$WORK/out")"
+is "a merge conflict marker is caught"            "$(printf '%s' "$DET" | grep -c 'check:merge-marker')" 1
+is "a focused test is caught"                     "$(printf '%s' "$DET" | grep -c 'check:focused-test')" 1
+is "a leaked AWS key is caught"                   "$(printf '%s' "$DET" | grep -c 'check:aws-key')" 1
+is "a debugger statement is caught"               "$(printf '%s' "$DET" | grep -c 'check:debug-left')" 1
+is "a skipped test is noted"                      "$(printf '%s' "$DET" | grep -c 'check:skipped-test')" 1
+is "the same token in prose is NOT flagged"       "$(printf '%s' "$DET" | grep -c 'KEYS.md')" 0
+
+# The patterns must not fire on ordinary code that merely resembles them. Each of these was a real
+# false positive the reviewer caught: model.fit() in every scikit-learn file, ======= as a comment
+# separator, and AWS's own published placeholder.
+python3 - "$WORK/repo" <<'EOF'
+import sys, os
+d = sys.argv[1]
+open(os.path.join(d, "ml.py"), "w").write("model.fit(X, y)\nclf.fit(train)\n")
+open(os.path.join(d, "sep.js"), "w").write("// =======\nconst a = 1;\n")
+open(os.path.join(d, "vendordoc.js"), "w").write('const ex = "AKIAIOSFODNN7EXAMPLE";\n')
+EOF
+git -C "$WORK/repo" add -A
+FP="$(run; cat "$WORK/out")"
+is "model.fit() is not a focused test"            "$(printf '%s' "$FP" | grep -c 'ml.py')" 0
+is "a ======= separator is not a merge marker"    "$(printf '%s' "$FP" | grep -c 'sep.js')" 0
+is "a vendor placeholder key is not a leak"       "$(printf '%s' "$FP" | grep -c 'vendordoc.js')" 0
+# Prose is exempt from the CODE checks, but a credential is leaked wherever it sits. Skipping
+# documentation entirely meant a production key committed in a README went unreported.
+printf 'prod key AKIAQWERTYUIOPASDFGH and xoxb-99887766554433221100\n' > "$WORK/repo/LEAK.md"
+printf 'the example is AKIAIOSFODNN7EXAMPLE\n' > "$WORK/repo/EXAMPLE.md"
+# Prose ABOUT a call must not read as the call: this comment is what first tripped the check.
+printf 'const x=1; // `fit(` is a keras call\nmodel.fit(X, y)\n' > "$WORK/repo/talk.js"
+git -C "$WORK/repo" add -A
+MD="$(run; cat "$WORK/out")"
+is "a real key in markdown IS caught"             "$(printf '%s' "$MD" | grep -c 'LEAK.md.*aws-key')" 1
+is "  ...and a token beside it"                   "$(printf '%s' "$MD" | grep -c 'LEAK.md.*slack-token')" 1
+is "a placeholder in markdown is not"             "$(printf '%s' "$MD" | grep -c 'EXAMPLE.md')" 0
+is "prose about fit( is not a focused test"       "$(printf '%s' "$MD" | grep -c 'talk.js')" 0
+rm -f "$WORK/repo/LEAK.md" "$WORK/repo/EXAMPLE.md" "$WORK/repo/talk.js"; git -C "$WORK/repo" add -A
+rm -f "$WORK/repo/ml.py" "$WORK/repo/sep.js" "$WORK/repo/vendordoc.js"; git -C "$WORK/repo" add -A
+
+echo "engine — suppressing a check requires saying why"
+python3 - "$WORK/repo" <<'EOF'
+import sys, os
+d = sys.argv[1]
+open(os.path.join(d, "fixture.js"), "w").write(
+  "// llm-review-ignore-file: aws-key — fixtures for the secret-scanner tests\n"
+  'const k = "AKIAQWERTYUIOPASDFGH";\n')
+open(os.path.join(d, "bare.js"), "w").write(
+  "// llm-review-ignore-file: aws-key\n"
+  'const k = "AKIAQWERTYUIOPASDFGH";\n')
+open(os.path.join(d, "inline.js"), "w").write(
+  'const k = "AKIAQWERTYUIOPASDFGH"; // llm-review-ignore: aws-key — documented sample value\n')
+EOF
+git -C "$WORK/repo" add -A
+SUP="$(run; cat "$WORK/out")"
+is "a justified file-level ignore is honoured"    "$(printf '%s' "$SUP" | grep -c 'fixture.js.*check:aws-key')" 0
+is "a justified inline ignore is honoured"        "$(printf '%s' "$SUP" | grep -c 'inline.js.*check:aws-key')" 0
+is "an unjustified ignore does NOT silence"       "$(printf '%s' "$SUP" | grep -c 'bare.js.*check:aws-key')" 1
+is "  ...and the bare marker is itself reported"  "$(printf '%s' "$SUP" | grep -c 'suppression-without-reason')" 1
+# Deleting a suppression must bring the check back. The marker was originally read from the raw hunk,
+# which included REMOVED lines, so a deleted marker went on suppressing — at the exact moment you most
+# want the check again.
+RM="$WORK/rmsup"; rm -rf "$RM"; mkdir -p "$RM"; git -C "$RM" init -q .
+git -C "$RM" config user.email t@t; git -C "$RM" config user.name t
+git -C "$RM" config core.hooksPath /dev/null
+printf '// llm-review-ignore-file: aws-key — fixture\nconst k="AKIAOLDOLDOLDOLDOLD1";\n' > "$RM/f.js"
+git -C "$RM" add -A; git -C "$RM" commit -qm base
+printf 'const k="AKIAQWERTYUIOPASDFGH";\n' > "$RM/f.js"           # marker gone, new key added
+git -C "$RM" add -A
+mkfake 'echo CLEAN'
+RMOUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+  LLM_REVIEW_NO_CACHE=1 node "$ENGINE" "$RM" --staged 2>/dev/null)"
+is "deleting a suppression re-enables the check"  "$(printf '%s' "$RMOUT" | grep -c 'check:aws-key')" 1
+
+# The placeholder allowlist must apply to WHAT MATCHED, not the whole line. Testing the line let a real
+# key hide behind any placeholder mentioned beside it.
+printf 'const real = "AKIAQWERTYUIOPASDFGH"; // unlike AKIAIOSFODNN7EXAMPLE\n' > "$WORK/repo/hide.js"
+git -C "$WORK/repo" add -A
+PH="$(run; cat "$WORK/out")"
+is "a key cannot hide behind a placeholder"       "$(printf '%s' "$PH" | grep -c 'hide.js.*check:aws-key')" 1
+# ...nor by embedding one inside itself. The allowlist is anchored: the match must BE a placeholder,
+# not merely contain one, or a real token exempts itself with `ghp_<real>EXAMPLEKEY<real>`.
+printf 'const t = "ghp_aaaaEXAMPLEKEYbbbbccccddddeeeeffff";\n' > "$WORK/repo/sneaky.js"
+printf 'const t = "AKIAIOSFODNN7EXAMPLE";\n' > "$WORK/repo/legit.js"
+git -C "$WORK/repo" add -A
+AN="$(run; cat "$WORK/out")"
+is "a token embedding a placeholder is flagged"   "$(printf '%s' "$AN" | grep -c 'sneaky.js.*check:gh-token')" 1
+is "  ...while the exact placeholder stays quiet" "$(printf '%s' "$AN" | grep -c 'legit.js')" 0
+rm -f "$WORK/repo/sneaky.js" "$WORK/repo/legit.js"; git -C "$WORK/repo" add -A
+rm -f "$WORK/repo/hide.js"; git -C "$WORK/repo" add -A
+
+# An honoured suppression is announced every run. Unlike --no-verify, which is per-commit and lands in
+# the ledger, a marker would otherwise silence a check forever with nobody ever told.
+#
+# Its own repo: the shared one accumulates fixtures from earlier cases, and an exit-code assertion is
+# only meaningful when nothing else in the tree can contribute a finding.
+QR="$WORK/quietrepo"; rm -rf "$QR"; mkdir -p "$QR"; git -C "$QR" init -q .
+git -C "$QR" config user.email t@t; git -C "$QR" config user.name t
+git -C "$QR" config core.hooksPath /dev/null
+echo seed > "$QR/s.txt"; git -C "$QR" add -A; git -C "$QR" commit -qm base
+printf 'const k="AKIAQWERTYUIOPASDFGH"; // llm-review-ignore: aws-key — fixture for the scanner tests\n' > "$QR/quiet.js"
+git -C "$QR" add -A
+qrun(){ : > "$WORK/calls"
+  env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+    LLM_REVIEW_NO_CACHE=1 ${1:-} node "$ENGINE" "$QR" --staged > "$WORK/qout" 2>/dev/null
+  echo $?; }
+QEXIT="$(qrun REVIEW_FAIL_ON=high)"
+is "an honoured suppression is reported"          "$(grep -c 'quiet.js.*is suppressed here' "$WORK/qout")" 1
+is "  ...with the reason given"                   "$(grep -c 'fixture for the scanner tests' "$WORK/qout")" 1
+is "  ...and does not block"                      "$QEXIT" 0
+# ...whereas the same key without the marker does.
+printf 'const k="AKIAQWERTYUIOPASDFGH";\n' > "$QR/quiet.js"; git -C "$QR" add -A
+is "  ...but the same key unmarked does block"    "$(qrun REVIEW_FAIL_ON=high)" 2
+
+echo "engine — a certain finding outranks 'could not verify'"
+# Exit 3 is treated leniently (non-strict mode lets it through with a warning), so returning it while
+# holding a leaked key would let the key past. A fact the models had no part in stands whatever became
+# of them: preflight failures and deterministic hits are judged BEFORE the could-not-verify branch.
+CR="$WORK/certrepo"; rm -rf "$CR"; mkdir -p "$CR"; git -C "$CR" init -q .
+git -C "$CR" config user.email t@t; git -C "$CR" config user.name t
+git -C "$CR" config core.hooksPath /dev/null
+echo seed > "$CR/s.txt"; git -C "$CR" add -A; git -C "$CR" commit -qm base
+crun2(){ env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+  LLM_REVIEW_NO_CACHE=1 REVIEW_FAIL_ON=high node "$ENGINE" "$CR" --staged >/dev/null 2>&1; echo $?; }
+mkfake 'exit 1'                                      # every model pass fails
+printf 'const k = "AKIAQWERTYUIOPASDFGH";\n' > "$CR/leak.js"; git -C "$CR" add -A
+is "a leaked key blocks even if every pass failed" "$(crun2)" 2
+rm -f "$CR/leak.js"; printf 'const fine = 1;\n' > "$CR/ok.js"; git -C "$CR" add -A
+is "  ...but with nothing certain it is exit 3"   "$(crun2)" 3
+# A character count is no less certain for a model having crashed.
+python3 -c "open('$CR/long.js','w').write('const x = \"' + 'y'*80 + '\";\n')" 2>/dev/null || \
+  printf 'const x = "%s";\n' "$(printf 'y%.0s' $(seq 80))" > "$CR/long.js"
+rm -f "$CR/ok.js"; git -C "$CR" add -A
+printf '{"style":{"maxLineLength":40,"severity":"medium"}}' > "$WORK/stcert.json"
+STC="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+  LLM_REVIEW_NO_CACHE=1 LLM_REVIEW_STYLE="$WORK/stcert.json" REVIEW_FAIL_ON=medium \
+  node "$ENGINE" "$CR" --staged >/dev/null 2>&1; echo $?)"
+is "a style violation also survives allFailed"    "$STC" 2
+rm -f "$WORK/repo/fixture.js" "$WORK/repo/bare.js" "$WORK/repo/inline.js"; git -C "$WORK/repo" add -A
+is "they block even when the model says CLEAN"    "$(run REVIEW_FAIL_ON=high)" 2
+is "  ...and cost no provider calls beyond review" "$([ "$(calls)" -le 2 ] && echo yes || echo no)" yes
+rm -f "$WORK/repo/awful.js" "$WORK/repo/KEYS.md"; git -C "$WORK/repo" add -A
+
+echo "engine — preflight runs what CI runs"
+mkfake 'echo CLEAN'
+# OFF unless asked for: these commands come from the repository, so an automatic hook running them
+# would hand a hostile clone code execution.
+printf '{"preflight":["exit 3"]}' > "$WORK/pf.json"
+is "preflight is off by default"                  "$(run REVIEW_FAIL_ON=high LLM_REVIEW_CONFIG=$WORK/pf.json)" 0
+is "a failing check blocks once enabled"          "$(run REVIEW_FAIL_ON=high LLM_REVIEW_CONFIG=$WORK/pf.json LLM_REVIEW_PREFLIGHT=1)" 2
+is "  ...and says which command and exit code"    "$(grep -c 'fails with exit 3' "$WORK/out")" 1
+printf '{"preflight":["true"]}' > "$WORK/pf-ok.json"
+is "a passing check does not block"               "$(run REVIEW_FAIL_ON=high LLM_REVIEW_CONFIG=$WORK/pf-ok.json LLM_REVIEW_PREFLIGHT=1)" 0
+# A tool that is not installed says nothing about the code.
+printf '{"preflight":["definitely-not-a-real-tool-xyz"]}' > "$WORK/pf-missing.json"
+is "a missing tool is skipped, not a finding"     "$(run REVIEW_FAIL_ON=high LLM_REVIEW_CONFIG=$WORK/pf-missing.json LLM_REVIEW_PREFLIGHT=1)" 0
+
+echo "engine — learning from a missed finding"
+MH="$WORK/misshome"; mkdir -p "$MH/.config/llm-review"
+mkfake 'printf "%s\n" "$@" > "$WORK/prompt.txt"; echo CLEAN'
+printf -- '- the PR bot found an N+1 we walked past\n' > "$MH/.config/llm-review/missed.md"
+env -i HOME="$MH" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" WORK="$WORK" \
+  LLM_REVIEW_NO_CACHE=1 node "$ENGINE" "$WORK/repo" --staged >/dev/null 2>&1
+is "a recorded miss reaches the prompt"           "$(grep -c 'found an N+1 we walked past' "$WORK/prompt.txt")" 1
+is "  ...under a heading that explains it"        "$(grep -c 'PREVIOUSLY MISSED' "$WORK/prompt.txt")" 1
 
 echo "engine — an unrecognised exit status is never a pass"
 mkfake 'exit 42'

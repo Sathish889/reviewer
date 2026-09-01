@@ -19,6 +19,8 @@
 #   --block         exit 2 on high-severity findings / 3 if the review could not complete (for gates & CI)
 #   --report FILE   also write a machine-readable JSON report
 #   --status        show what is installed and how the gates are configured
+#   --learn-miss "what a downstream reviewer caught that this one missed"
+#                   record a blind spot; every later review is told to check for that class
 #   --learn-style [path...] [--write]
 #                   read code you have already written and infer YOUR style profile (line length,
 #                   indentation, function/file length). --write saves it to
@@ -78,6 +80,19 @@ while [ $# -gt 0 ]; do
     --block)   BLOCK=1 ;;
     --status)  exec "$DIR/../install.sh" --status ;;
     --learn-style) shift; exec node "$DIR/../lib/learn-style.mjs" "$@" ;;
+    --learn-miss)
+      # Record something a reviewer downstream caught that this one missed. Every later review is told
+      # to look for that class specifically — the only way to stop the same miss happening twice.
+      shift
+      [ -n "${1:-}" ] || { echo "llm-review: --learn-miss needs a description" >&2; exit 2; }
+      MISSFILE="$HOME/.config/llm-review/missed.md"
+      mkdir -p "$(dirname "$MISSFILE")"
+      [ -f "$MISSFILE" ] || printf '# Things a downstream reviewer caught that llm-review did not.\n# Injected into every review prompt. Newest last; the most recent 25 are used.\n' > "$MISSFILE"
+      printf -- '- %s (recorded %s)\n' "$*" "$(date +%Y-%m-%d)" >> "$MISSFILE"
+      echo "Recorded. Future reviews will look for this specifically:"
+      echo "  $*"
+      echo "Stored in $MISSFILE"
+      exit 0 ;;
     -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$SOURCE"; exit 0 ;;
     -*)        echo "llm-review: unknown flag $1 (try --help)" >&2; exit 2 ;;
     *)         ARGS+=("$1") ;;
