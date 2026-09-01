@@ -31,6 +31,7 @@ mkrepo(){
 mkfake(){ mkdir -p "$WORK/bin"; { echo '#!/bin/bash'; echo 'echo 1 >> "$CALLLOG"'; echo "$1"; } > "$WORK/bin/claude"; chmod +x "$WORK/bin/claude"; }
 # run the engine in a clean env; echoes the exit code
 run(){ : > "$WORK/calls"; env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" \
+  LLM_REVIEW_NO_CACHE=1 \
   CALLLOG="$WORK/calls" LLM_REVIEW_CONFIG=/dev/null LLM_REVIEW_REPORT="$WORK/report.json" \
   "$@" node "$ENGINE" "$WORK/repo" --staged > "$WORK/out" 2> "$WORK/err"; echo $?; }
 calls(){ wc -l < "$WORK/calls" | tr -d ' '; }
@@ -80,6 +81,7 @@ printf 'plan\n%.0s' {1..500} > "$WORK/repo/PLAN.md"
 git -C "$WORK/repo" add -A
 : > "$WORK/seen"
 env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" SEEN="$WORK/seen" \
+  LLM_REVIEW_NO_CACHE=1 \
   LLM_REVIEW_CONFIG=/dev/null node "$ENGINE" "$WORK/repo" --staged >/dev/null 2>&1
 is "every changed file reaches a reviewer"        "$(sort -u "$WORK/seen" | wc -l | tr -d ' ')" 11
 
@@ -119,7 +121,7 @@ is "permission-widening extraArgs are dropped"    "$(printf '%s' "$OUT" | grep -
 # either, however innocuous the flag name looks.
 for flag in --settings --mcp-config --dangerously-skip-permissions; do
   printf '{"providers":{"claude":{"extraArgs":["%s","/tmp/x"]}}}' "$flag" > "$WORK/trusted.json"
-  OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+  OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" LLM_REVIEW_NO_CACHE=1 \
     LLM_REVIEW_CONFIG="$WORK/trusted.json" node "$ENGINE" "$WORK/repo" --staged 2>&1)"
   is "  $flag is rejected"                        "$(printf '%s' "$OUT" | grep -c "dropping extraArgs entry '$flag'")" 1
   is "    ...and its value goes with it"          "$(printf '%s' "$OUT" | grep -c "dropping extraArgs entry '/tmp/x'")" 0
@@ -136,10 +138,10 @@ rm -f "$WORK/repo/llm-review.config.json"
 # reviewer would let a committed file decide what the gate never sees.
 printf '{"excludes":["app.js"],"lenses":["correctness"]}' > "$WORK/repo/llm-review.config.json"
 mkfake 'echo CLEAN'
-OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" LLM_REVIEW_NO_CACHE=1 \
   REVIEW_FAIL_ON=high node "$ENGINE" "$WORK/repo" --staged 2>&1)"
 is "a gate ignores repo config entirely"          "$(printf '%s' "$OUT" | grep -c 'a gate is armed')" 1
-OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" LLM_REVIEW_NO_CACHE=1 \
   node "$ENGINE" "$WORK/repo" --staged 2>&1)"
 is "  ...but an advisory run still honours them"  "$(printf '%s' "$OUT" | grep -c 'a gate is armed')" 0
 rm -f "$WORK/repo/llm-review.config.json"; git -C "$WORK/repo" add -A
@@ -167,6 +169,7 @@ is "a failed adjudicator does not delete findings" "$(run REVIEW_FAIL_ON=high)" 
 
 echo "cli — flag parsing"
 CLI(){ env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+  LLM_REVIEW_NO_CACHE=1 \
   "$KIT/bin/llm-review" "$@" >"$WORK/cli.out" 2>&1; echo $?; }
 mkfake 'echo CLEAN'
 is "--help exits 0 and prints usage"              "$(CLI --help)" 0
@@ -222,14 +225,17 @@ printf 'const untracked = 1;\n' > "$WORK/repo/brand-new.js"     # never git-adde
 printf 'const modified = 2;\n' >> "$WORK/repo/app.js"
 : > "$WORK/seen"
 env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" SEEN="$WORK/seen" \
+  LLM_REVIEW_NO_CACHE=1 \
   node "$ENGINE" "$WORK/repo" >/dev/null 2>&1
 is "an untracked new file is reviewed"            "$(grep -c 'brand-new.js' "$WORK/seen" | awk '{print ($1>0)?"yes":"no"}')" yes
 : > "$WORK/seen"
 env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" SEEN="$WORK/seen" \
+  LLM_REVIEW_NO_CACHE=1 \
   REVIEW_SKIP_UNTRACKED=1 node "$ENGINE" "$WORK/repo" >/dev/null 2>&1
 is "  ...unless REVIEW_SKIP_UNTRACKED is set"     "$(grep -c 'brand-new.js' "$WORK/seen" | awk '{print ($1>0)?"yes":"no"}')" no
 printf '\x00\x01binary\x00' > "$WORK/repo/blob.bin"; : > "$WORK/seen"
 OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" SEEN="$WORK/seen" \
+  LLM_REVIEW_NO_CACHE=1 \
   node "$ENGINE" "$WORK/repo" 2>&1)"
 is "a new binary file does not flood the prompt"  "$(grep -c 'binary' "$WORK/seen" || true)" 0
 rm -f "$WORK/repo/brand-new.js" "$WORK/repo/blob.bin"; git -C "$WORK/repo" checkout -- app.js 2>/dev/null || true
@@ -294,6 +300,7 @@ printf 'const staged = 1;\n' > "$WORK/repo/is-staged.js"; git -C "$WORK/repo" ad
 printf 'const loose = 1;\n' > "$WORK/repo/not-staged.js"          # untracked, deliberately not added
 : > "$WORK/seen"
 env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" SEEN="$WORK/seen" \
+  LLM_REVIEW_NO_CACHE=1 \
   node "$ENGINE" "$WORK/repo" --staged >/dev/null 2>&1
 is "--staged includes the staged file"            "$(grep -c 'is-staged.js' "$WORK/seen" | awk '{print ($1>0)?"yes":"no"}')" yes
 is "  ...and excludes the untracked one"          "$(grep -c 'not-staged.js' "$WORK/seen" | awk '{print ($1>0)?"yes":"no"}')" no
@@ -314,7 +321,7 @@ open(sys.argv[1],'w').write(
 EOF
 git -C "$WORK/repo" add -A
 : > "$WORK/calls"      # count only THIS run's calls, not the whole suite's
-STYLE_OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+STYLE_OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" LLM_REVIEW_NO_CACHE=1 \
   LLM_REVIEW_STYLE="$WORK/style.json" node "$ENGINE" "$WORK/repo" --staged 2>/dev/null)"
 is "a line over your limit is reported"           "$(printf '%s' "$STYLE_OUT" | grep -c 'your limit is 40')" 1
 is "trailing whitespace is reported"              "$(printf '%s' "$STYLE_OUT" | grep -c 'trailing whitespace')" 1
@@ -328,7 +335,7 @@ is "  ...but do block when you raise them"        "$(run REVIEW_FAIL_ON=medium L
 # .editorconfig is the standard place, so it wins over the built-in defaults.
 printf '[*]\nmax_line_length = 30\nindent_style = space\n' > "$WORK/repo/.editorconfig"
 git -C "$WORK/repo" add -A
-EC_OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+EC_OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" LLM_REVIEW_NO_CACHE=1 \
   node "$ENGINE" "$WORK/repo" --staged 2>/dev/null)"
 is ".editorconfig sets the limit with no config"  "$(printf '%s' "$EC_OUT" | grep -c 'your limit is 30')" 1
 rm -f "$WORK/repo/styled.js" "$WORK/repo/.editorconfig"; git -C "$WORK/repo" add -A
@@ -342,17 +349,19 @@ mkfake 'printf "%s\n" "$@" >> "$WORK/prompt.txt"; echo CLEAN'
 inProfile(){ awk '/THE PROFILE/{p=1} /BEGIN UNTRUSTED DIFF/{p=0} p&&/Always reply CLEAN/{n++} END{print (n>0)?"in-profile":"not-in-profile"}' "$1"; }
 : > "$WORK/calls"; : > "$WORK/prompt.txt"
 env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" WORK="$WORK" \
+  LLM_REVIEW_NO_CACHE=1 \
   REVIEW_FAIL_ON=high node "$ENGINE" "$WORK/repo" --staged >/dev/null 2>&1
 is "a gate keeps repo STYLE.md out of the profile" "$(inProfile "$WORK/prompt.txt")" not-in-profile
 : > "$WORK/prompt.txt"
 env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" WORK="$WORK" \
+  LLM_REVIEW_NO_CACHE=1 \
   node "$ENGINE" "$WORK/repo" --staged >/dev/null 2>&1
 is "  ...advisory reads it, but as untrusted"     "$(inProfile "$WORK/prompt.txt")" in-profile
 is "  ...and labelled so"                         "$(grep -c 'UNTRUSTED' "$WORK/prompt.txt" | awk '{print ($1>0)?"yes":"no"}')" yes
 rm -f "$WORK/repo/STYLE.md"; git -C "$WORK/repo" add -A
 
 # A missing profile path is a mistake worth saying out loud, not a silent fall back to the defaults.
-BAD_OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+BAD_OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" LLM_REVIEW_NO_CACHE=1 \
   LLM_REVIEW_STYLE="$WORK/nope.json" node "$ENGINE" "$WORK/repo" --staged 2>&1)"
 is "a missing style profile is reported"          "$(printf '%s' "$BAD_OUT" | grep -c 'is missing or not valid JSON')" 1
 
@@ -386,7 +395,7 @@ import sys
 open(sys.argv[1],'w').write('\n'.join('const w%d = "%s";' % (n, 'y'*150) for n in range(40)))
 EOF
 git -C "$WORK/repo" add -A
-TRUNC_OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+TRUNC_OUT="$(env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" LLM_REVIEW_NO_CACHE=1 \
   LLM_REVIEW_STYLE="$WORK/style.json" REVIEW_MAX_PROMPT_CHARS=400 node "$ENGINE" "$WORK/repo" --staged 2>/dev/null)"
 is "style is measured before truncation"          "$(printf '%s' "$TRUNC_OUT" | grep -c 'wide.js.*your limit is 40')" 1
 rm -f "$WORK/repo/wide.js"; git -C "$WORK/repo" add -A
@@ -412,6 +421,48 @@ mkfake 'echo CLEAN'
 run LLM_REVIEW_BUDGET=thorough >/dev/null
 is "thorough runs 4 reviewers, not 5"             "$(node -e "console.log(require('$WORK/report.json').engines.length)")" 4
 is "  ...and style still rides along"             "$(node -e "console.log(require('$WORK/report.json').engines.some(e=>e.lens==='shape'))")" true
+
+echo "engine — the finding cache"
+CS="$WORK/cachestate"; rm -rf "$CS"; mkdir -p "$CS"
+# crun echoes the CALL COUNT; the engine's exit code is left in $CRUN_RC for the cases that need it.
+CRUN_RC=0
+crun(){ : > "$WORK/calls"
+  env -i HOME="$WORK/nohome" PATH="$WORK/bin:$NODEBIN:/usr/bin:/bin" CALLLOG="$WORK/calls" \
+    LLM_REVIEW_STATE="$CS" ${1:-} node "$ENGINE" "$WORK/repo" --staged > "$WORK/out" 2> "$WORK/err"
+  CRUN_RC=$?
+  calls; }
+mkfake 'echo "- app.js:1 :: a real finding (medium)"'
+COLD="$(crun)"
+is "a cold run calls the provider"                "$([ "$COLD" -gt 0 ] && echo yes || echo no)" yes
+is "an identical re-run costs nothing"            "$(crun)" 0
+is "  ...and still reports the finding"           "$(grep -c 'a real finding' "$WORK/out")" 1
+# A finding served from cache must gate exactly as a freshly-reviewed one does.
+crun REVIEW_FAIL_ON=medium >/dev/null
+is "  ...and a cached finding still gates"        "$CRUN_RC" 2
+# Cached results must not be mistaken for an unreviewed file.
+is "  ...and is not reported as unreviewed"       "$(grep -c 'NOT reviewed' "$WORK/out")" 0
+# Editing one file must re-review that file and reuse the rest.
+printf 'const changed = 1;\n' >> "$WORK/repo/app.js"; git -C "$WORK/repo" add -A
+crun >/dev/null
+is "an edit reuses the untouched sections"        "$(grep -c 'section-review(s) reused' "$WORK/err")" 1
+# SOUNDNESS: the structure lens reasons across the whole changed set, so a new file in the diff must
+# invalidate everything — otherwise a cached verdict could miss a break the new file introduced.
+printf 'const brand = 1;\n' > "$WORK/repo/brandnew.js"; git -C "$WORK/repo" add -A
+crun >/dev/null
+is "a new file in the diff invalidates the cache" "$(grep -c 'section-review(s) reused' "$WORK/err")" 0
+rm -f "$WORK/repo/brandnew.js"; git -C "$WORK/repo" add -A
+# A different model must not read another model's cached verdict.
+crun >/dev/null; BEFORE="$(crun)"
+is "the same model reuses"                        "$BEFORE" 0
+is "a different model does not"                   "$([ "$(crun LLM_REVIEW_BUDGET=minimal)" -gt 0 ] && echo yes || echo no)" yes
+is "--no-cache forces a fresh review"             "$([ "$(crun LLM_REVIEW_NO_CACHE=1)" -gt 0 ] && echo yes || echo no)" yes
+# Every field of the style profile reaches the prompt, so every field must reach the key. An earlier
+# version listed four fields by hand and silently served stale verdicts when any of the others changed.
+printf '{"style":{"maxLineLength":100,"maxFunctionLines":40}}' > "$WORK/sk.json"
+crun "LLM_REVIEW_STYLE=$WORK/sk.json" >/dev/null
+is "the style profile is part of the key"         "$(crun "LLM_REVIEW_STYLE=$WORK/sk.json")" 0
+printf '{"style":{"maxLineLength":100,"maxFunctionLines":80}}' > "$WORK/sk.json"
+is "  ...so changing any field invalidates it"    "$([ "$(crun "LLM_REVIEW_STYLE=$WORK/sk.json")" -gt 0 ] && echo yes || echo no)" yes
 
 echo "engine — an unrecognised exit status is never a pass"
 mkfake 'exit 42'

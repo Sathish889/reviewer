@@ -262,6 +262,22 @@ first already did instead of paying for it twice.
 (`chunks = ceiling ÷ reviewers`) and the diff packed to fit, so no file is dropped because the budget
 ran out. Any file no reviewer saw is reported as a finding and exits `3`.
 
+**Nothing is reviewed twice.** A blocked commit gets fixed and re-committed, and without a cache the
+next review re-reads every file. Measured on this repository: the same 23-file change was reviewed 8
+times for 21 provider calls, and 70% of the file sections were byte-identical between an attempt and
+its retry. Findings are now cached per file section, so a retry only pays for what you actually
+changed — an identical re-run costs **zero** calls.
+
+The cache key is what makes that sound: it covers the section's exact bytes, the lens, the provider
+*and* model, the style profile, and the sorted set of **all** changed paths. That last part matters —
+the `structure` reviewer reasons across the whole changed set, so if a file enters or leaves the diff,
+nothing is reused. `LLM_REVIEW_NO_CACHE=1` forces a fresh review; entries expire after 30 days.
+
+The key names the model, not the model's behaviour — so if a provider changes what sits behind an
+alias like `sonnet`, cached verdicts from the older one are reused until they expire. The TTL is the
+bound on that; shorten it with `REVIEW_CACHE_TTL_DAYS`, or clear
+`~/.local/state/llm-review/cache/` after a provider update you care about.
+
 **Reviewing the same code twice** is the other multiplier. `post-commit` does not re-review what the
 commit gate already passed, and `pre-push` consults the ledger: a single-commit push whose commit is
 already reviewed is skipped entirely. A commit-then-push cycle costs **at most 4 mid-tier calls**.
