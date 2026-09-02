@@ -196,6 +196,29 @@ a model to predict what ESLint will say; you run ESLint.
   execution. Prefer the **per-repo** form: the global one grants that trust to every repository you
   will ever clone on the machine, which is a much larger promise than "I trust this project".
 
+**Review the same thing the MR bot reviews.** On the second and later pushes, a naive pre-push hook
+sees only the commits being added — while the bot on the merge request re-reviews the *whole branch
+against its target*, every time. Anything wrong in an earlier push is then invisible locally and
+reported remotely on every run, which is what "the bot keeps finding more" usually is. `pre-push`
+therefore reviews the full branch by default; the finding cache makes that affordable, because a
+re-push only pays for the sections that actually changed.
+
+```bash
+git config review.llmPrepushFullBranch false   # review only the newly pushed commits instead
+```
+
+**One bug is rarely one bug.** Measured on a real merge request: the identical
+attacker-controlled-filename flaw appeared in three sibling components, and each round of review
+surfaced one more. So every defect triggers a **same-class sweep** — name the pattern behind it, grep
+the whole repository for that pattern including files the diff never touched, and report every
+instance at once.
+
+**Know what the project already does.** A hardcoded English string is only a bug if you know the
+project is translated; otherwise it reads as ordinary code. i18n directories, Angular, Next.js, Prisma
+and Storybook are detected from the filesystem, and `CONTRIBUTING.md` is passed through verbatim.
+Paired files — a component's `.ts` and `.html`, a header and its implementation, a migration and its
+model — are read together, because a mismatch between them is invisible in either half alone.
+
 **Judgement-based reviewers — not solvable, only shrinkable.** Another model, or a colleague, can
 always raise something this one did not. Nobody can promise otherwise.
 
