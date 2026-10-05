@@ -1,0 +1,25 @@
+{
+  "description": "getMerchant(id) becomes getMerchant(tenantId, id) for multi-tenancy. The diff updates two callers; two untouched callers elsewhere still pass (id), so id is read as tenantId and the lookup silently returns null.",
+  "expect": [
+    {
+      "category": "blast-radius",
+      "accept": [
+        "blast-radius",
+        "bug",
+        "semantic"
+      ],
+      "files": [
+        "src/jobs/payout.job.js",
+        "src/webhooks/kyc.webhook.js",
+        "src/merchants/merchant.repo.js"
+      ],
+      "keywords": [
+        "payout",
+        "kyc",
+        "runPayouts",
+        "onKycResult"
+      ],
+      "lesson": "When a function gains, loses or reorders a parameter, check every call site in files the diff does not touch for the old arity or order; a shifted argument is a silent wrong value, not a crash."
+    }
+  ]
+}

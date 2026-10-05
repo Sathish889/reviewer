@@ -1,0 +1,37 @@
+{
+  "description": "Orders gains invoicing: orders/order.service.js now imports billing/invoice.js, which already imports orders/order.service.js (an import cycle). It also re-implements the existing isValidEmail validator.",
+  "expect": [
+    {
+      "category": "architecture",
+      "accept": [
+        "architecture",
+        "bug"
+      ],
+      "files": [
+        "src/orders/order.service.js",
+        "src/billing/invoice.js"
+      ],
+      "keywords": [
+        "cycle",
+        "circular"
+      ],
+      "lesson": "When a file adds an import of a sibling module, check whether that module already imports the file back; a new cycle is an architecture finding even if it happens to load today."
+    },
+    {
+      "category": "code-quality",
+      "accept": [
+        "code-quality",
+        "architecture"
+      ],
+      "files": [
+        "src/orders/order.service.js"
+      ],
+      "keywords": [
+        "isValidEmail",
+        "validate.js",
+        "duplicat"
+      ],
+      "lesson": "When added code formats, parses or validates a value, search for an existing helper doing the same job and report the duplicate by name."
+    }
+  ]
+}

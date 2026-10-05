@@ -1,0 +1,21 @@
+{
+  "description": "The default timeout changes from 30000 ms to 0; callers that omit it now never time out (0 = no timeout).",
+  "expect": [
+    {
+      "category": "semantic",
+      "accept": [
+        "semantic",
+        "bug",
+        "blast-radius"
+      ],
+      "files": [
+        "src/http/client.js",
+        "src/payments/capture.js"
+      ],
+      "keywords": [
+        "timeout"
+      ],
+      "lesson": "When a default parameter or config default changes, list the callers that omit the argument and say what each now gets."
+    }
+  ]
+}

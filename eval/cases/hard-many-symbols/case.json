@@ -1,0 +1,21 @@
+{
+  "description": "Every money helper gains a leading ctx parameter. The diff updates ten callers across ten directories; src/reports/monthly.report.js (untouched) still calls roundHalfEven(total) and fromMinorUnits(...), so the amount lands in ctx and ctx.exponent throws on a number.",
+  "expect": [
+    {
+      "category": "blast-radius",
+      "accept": [
+        "blast-radius",
+        "bug",
+        "semantic"
+      ],
+      "files": [
+        "src/reports/monthly.report.js",
+        "src/money/amounts.js"
+      ],
+      "keywords": [
+        "monthly"
+      ],
+      "lesson": "When a function gains, loses or reorders a parameter, check every call site in files the diff does not touch for the old arity or order; a shifted argument is a silent wrong value, not a crash."
+    }
+  ]
+}

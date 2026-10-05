@@ -1,0 +1,23 @@
+{
+  "description": "A React component imports the pg driver and runs SQL itself, bypassing the existing merchants API client.",
+  "expect": [
+    {
+      "category": "architecture",
+      "accept": [
+        "architecture",
+        "security"
+      ],
+      "files": [
+        "src/components/MerchantList.jsx"
+      ],
+      "keywords": [
+        "layer",
+        "bypass",
+        "merchants.client",
+        "listMerchants",
+        "api client"
+      ],
+      "lesson": "When a UI or edge-layer file adds an import of a database driver or cloud SDK, report the layer skip and name the existing service or API client it bypasses."
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "description": "calculateTotal is renamed to computeTotal; checkout.js (untouched) still imports calculateTotal.",
+  "expect": [
+    {
+      "category": "blast-radius",
+      "accept": [
+        "blast-radius",
+        "bug"
+      ],
+      "files": [
+        "src/checkout/checkout.js",
+        "src/pricing/totals.js"
+      ],
+      "keywords": [
+        "calculateTotal",
+        "checkout"
+      ],
+      "lesson": "For every exported symbol a change renames or removes, list the importers in files the diff does not touch; each one still using the old name is a broken import."
+    }
+  ]
+}

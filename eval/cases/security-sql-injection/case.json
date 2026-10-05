@@ -1,0 +1,20 @@
+{
+  "description": "A search endpoint concatenates the query string into SQL.",
+  "expect": [
+    {
+      "category": "security",
+      "accept": [
+        "security"
+      ],
+      "files": [
+        "src/db/search.js"
+      ],
+      "keywords": [
+        "inject",
+        "CWE-89",
+        "sql"
+      ],
+      "lesson": "When a query changes from parameters to string interpolation, report each interpolated value that can come from a request, including ORDER BY and LIMIT clauses."
+    }
+  ]
+}

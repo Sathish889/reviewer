@@ -1,0 +1,5 @@
+{
+  "description": "Renames a local variable inside one function. Nothing outside the function can observe it.",
+  "expect": [],
+  "clean": true
+}

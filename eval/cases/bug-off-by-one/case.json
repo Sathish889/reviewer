@@ -1,0 +1,24 @@
+{
+  "description": "Batch loop changed from < to <=, so the last iteration reads past the end and sends an undefined batch.",
+  "expect": [
+    {
+      "category": "bug",
+      "accept": [
+        "bug",
+        "semantic"
+      ],
+      "files": [
+        "src/jobs/sync.js"
+      ],
+      "keywords": [
+        "<=",
+        "off-by-one",
+        "empty",
+        "extra",
+        "past the end",
+        "boundary"
+      ],
+      "lesson": "When a loop bound changes between < and <=, compute the final iteration for an input whose length is an exact multiple of the step (including 0) and say what that iteration sends."
+    }
+  ]
+}

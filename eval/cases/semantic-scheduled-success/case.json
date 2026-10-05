@@ -1,0 +1,23 @@
+{
+  "description": "Scheduling a deactivation now returns SUCCESS; the gateway route cascades on SUCCESS, so the stores are deactivated immediately.",
+  "expect": [
+    {
+      "category": "semantic",
+      "accept": [
+        "semantic",
+        "bug",
+        "blast-radius"
+      ],
+      "files": [
+        "src/gateway/merchant.routes.js",
+        "src/merchant/merchant.service.js"
+      ],
+      "keywords": [
+        "cascade",
+        "deactivateStores",
+        "immediately"
+      ],
+      "lesson": "When a function starts returning an existing status (e.g. SUCCESS) for a NEW situation (scheduled, queued, partial), find every caller that branches on that status and check whether it now performs an irreversible action at the wrong time."
+    }
+  ]
+}

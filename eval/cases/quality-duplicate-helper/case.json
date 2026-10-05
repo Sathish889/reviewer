@@ -1,0 +1,22 @@
+{
+  "description": "A new invoice formatter re-implements formatCurrency line for line instead of importing it.",
+  "expect": [
+    {
+      "category": "code-quality",
+      "accept": [
+        "code-quality",
+        "architecture"
+      ],
+      "files": [
+        "src/invoices/lines.js"
+      ],
+      "keywords": [
+        "duplicat",
+        "formatCurrency",
+        "reuse",
+        "copy"
+      ],
+      "lesson": "When added code formats, parses or validates a value, search for an existing helper doing the same job and report the duplicate by name."
+    }
+  ]
+}

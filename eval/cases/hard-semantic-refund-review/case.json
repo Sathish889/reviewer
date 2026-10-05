@@ -1,0 +1,38 @@
+{
+  "description": "Feature commit adds manual review for large refunds. A queued-for-review refund is returned as APPROVED, and the untouched settlement worker releases funds on APPROVED. The diff also has logging, a helper rename, a test and docs.",
+  "expect": [
+    {
+      "category": "semantic",
+      "accept": [
+        "semantic",
+        "bug",
+        "blast-radius",
+        "security"
+      ],
+      "files": [
+        "src/workers/settlement.worker.js",
+        "src/refunds/refund.service.js"
+      ],
+      "keywords": [
+        "releaseFunds",
+        "settlement"
+      ],
+      "lesson": "When a function starts returning an existing status (e.g. SUCCESS) for a NEW situation (scheduled, queued, partial), find every caller that branches on that status and check whether it now performs an irreversible action at the wrong time."
+    },
+    {
+      "category": "blast-radius",
+      "accept": [
+        "blast-radius",
+        "bug"
+      ],
+      "files": [
+        "src/refunds/format.js",
+        "src/api/refunds.view.js"
+      ],
+      "keywords": [
+        "formatRefund"
+      ],
+      "lesson": "For every exported symbol a change renames or removes, list the importers in files the diff does not touch; each one still using the old name is a broken import."
+    }
+  ]
+}
