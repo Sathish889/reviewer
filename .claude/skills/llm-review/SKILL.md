@@ -38,10 +38,30 @@ Halving the chunk size does not halve the cost — it doubles how many times you
 | profile | model | max calls | reviewers | when |
 | --- | --- | --- | --- | --- |
 | `minimal` | haiku | 2 | one combined pass | debugging, demos, docs-only changes |
-| `balanced` | sonnet | 4 | two, covering all four mandates | **the default; what every hook runs** |
-| `thorough` | opus | 8 | four separate + adjudicator | explicitly requested deep review only |
+| `balanced` | sonnet | 4 | three: `change` (bug+semantic+blast radius), `design` (architecture+code quality+style), `risk` (security+QA) | **the default; what every hook runs** |
+| `thorough` | opus | 8 | five: correctness, impact, design, security, qa + adjudicator | explicitly requested deep review only |
 
 An absolute ceiling of 4 applies to everything except `--thorough` and an explicit `--max-calls`.
+
+The 4th balanced call is shared by the adjudicator and the **gap loop**, and the adjudicator wins.
+The gap loop is one focused pass for a core category that came back empty despite strong measured
+evidence. It never runs after a failed pass and can only add findings. `--no-loop` turns it off.
+
+## Change intelligence costs nothing — keep it that way
+
+`lib/impact.mjs` computes the blast-radius map and the semantic, architecture and quality signals with
+`git grep` and a diff walk before any call. Anything a regex or a grep can find belongs there, not in a
+prompt. The cache key includes each section's intel, so a caller changing elsewhere invalidates it.
+
+## Eval and self-improvement spend real calls — only by name
+
+- `llm-review --eval` and `--improve` print a plan and the call cost and spend **nothing**. Only
+  `--yes` runs them. Never add `--yes` to a hook, a default or a script.
+- `--eval` defaults to `minimal`: 8 cases is at most 16 Haiku calls.
+- To compare two engine versions, use `LLM_REVIEW_EVAL_ENGINE=<checkout>/lib/llm-diff-review.mjs` on the
+  same cases. Do not hand-run reviews on fixture repos.
+- A lesson may only say what to LOOK FOR. `lib/improve.mjs` refuses quieting text on write and on read.
+  Do not weaken that filter: a lesson is the one prompt input that a model may have written.
 
 ## Style
 

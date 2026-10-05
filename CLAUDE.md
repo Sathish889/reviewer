@@ -1,6 +1,8 @@
 # llm-review-kit
 
 A multi-engine AI code reviewer and QA gate for git. `lib/llm-diff-review.mjs` is the engine,
+`lib/impact.mjs` the zero-token change intelligence (blast radius, semantic/architecture/quality
+signals), `lib/harness.mjs` the eval harness over `eval/cases/`, `lib/improve.mjs` the lesson loop,
 `bin/llm-review` the CLI, `hooks/` the git hooks, `install.sh` the installer.
 
 ## Token discipline — read this before running anything
@@ -26,7 +28,7 @@ all produce `3`. Anything that would turn one of those into `0` is a bug, not an
 
 ```bash
 ./test/run.sh              # the full suite, entirely offline, no API calls
-./test/run.sh engine       # or: chain | hooks
+./test/run.sh engine       # or: chain | hooks | improve
 ```
 
 Run it before and after any change to the engine, the hooks, or the installer. Everything is testable
@@ -39,3 +41,11 @@ plus `LLM_REVIEW_{BIN,HOOKS_DIR,STATE,SCAN_DIRS}` overrides, so a test never tou
 
 Match the surrounding code: dense, commented where the *reason* is non-obvious, no ceremony. Comments
 explain why a thing is the way it is — usually the failure it prevents — not what the line does.
+
+## Measuring a change to the prompts
+
+A prompt or mandate change is a guess until it is measured. `llm-review --eval` (plan, free) and
+`llm-review --eval --yes` (real calls, `minimal` by default) score recall per category on
+`eval/cases/`. Compare two versions with `LLM_REVIEW_EVAL_ENGINE=<other checkout>/lib/llm-diff-review.mjs`.
+The cases contain deliberate defects, so the commit gate will flag them; that is expected.
+Lessons (`lib/improve.mjs`) may only ever add look-for guidance — never anything that quiets a reviewer.

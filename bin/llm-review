@@ -8,6 +8,10 @@
 #   baseRef [tipRef] review <baseRef>...<tipRef>; tipRef defaults to HEAD. A pre-push hook passes the
 #                   ref being pushed, which is often not the branch that is checked out.
 #   --staged        review ONLY the staged tree (index vs HEAD) — what a commit would contain
+#   --commit SHA    review ONE commit (SHA^..SHA), reading the code as it was at that commit.
+#                   `llm-review . SHA` is different: it reviews everything AFTER SHA, up to HEAD.
+#   --no-loop       skip the gap loop (the focused second pass for a category that came back empty
+#                   despite measured evidence; it only ever spends budget the run already has)
 #   --budget NAME   token profile: minimal | balanced (default) | thorough
 #                     minimal   haiku,  <=2 provider calls, one combined reviewer, no adjudication
 #                     balanced  sonnet, <=4 calls, two reviewers covering all four mandates
@@ -21,6 +25,18 @@
 #   --status        show what is installed and how the gates are configured
 #   --learn-miss "what a downstream reviewer caught that this one missed"
 #                   record a blind spot; every later review is told to check for that class
+#   --eval [--yes] [--only a,b] [--budget NAME]
+#                   score the reviewer on seeded cases with known defects, per category
+#                   (bug, semantic, blast-radius, architecture, code-quality, security). Without
+#                   --yes it prints the plan and the call cost and spends nothing.
+#   --improve [--yes]
+#                   the self-improving loop: every miss from the last --eval becomes a candidate
+#                   lesson, is trialled on its case and the clean controls, and is promoted into
+#                   every future review only if it turned the miss into a catch without noise
+#   --lessons [add <category> "<look for…>" | retire ID | promote ID]
+#                   list or manage what the reviewer has learned
+#   --capture-miss --commit SHA --at FILE:LINE --category C [--note "..."] [--lesson "..."]
+#                   turn a REAL miss into a permanent eval case, so it is never missed twice
 #   --learn-style [path...] [--write]
 #                   read code you have already written and infer YOUR style profile (line length,
 #                   indentation, function/file length). --write saves it to
@@ -64,6 +80,13 @@ need_value() {   # need_value <flag> <next-token-or-empty>
 while [ $# -gt 0 ]; do
   case "$1" in
     --staged)  PASS+=("--staged") ;;
+    --commit) PASS+=("--commit=$(need_value --commit "${2-}")"); shift ;;
+    --commit=*) PASS+=("$1") ;;
+    --no-loop) export LLM_REVIEW_GAP_LOOP=0 ;;
+    --eval) shift; exec node "$DIR/../lib/harness.mjs" eval "$@" ;;
+    --improve) shift; exec node "$DIR/../lib/improve.mjs" run "$@" ;;
+    --lessons) shift; exec node "$DIR/../lib/improve.mjs" lessons "$@" ;;
+    --capture-miss) shift; exec node "$DIR/../lib/harness.mjs" capture --repo "$PWD" "$@" ;;
     --fast|--cheap|--minimal) export LLM_REVIEW_BUDGET=minimal ;;
     --thorough) export LLM_REVIEW_BUDGET=thorough ;;
     --budget) LLM_REVIEW_BUDGET="$(need_value --budget "${2-}")"; export LLM_REVIEW_BUDGET; shift ;;

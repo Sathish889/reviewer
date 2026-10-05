@@ -200,7 +200,9 @@ else
   # VALIDATE before trusting it. The download source is env-overridable and unsigned, so treat the
   # payload as untrusted input: it must contain the files we expect, and it must not contain a symlink
   # that points outside itself (the classic way an archive writes somewhere it was never given).
-  for want in lib/llm-diff-review.mjs bin/llm-review install.sh hooks/_chain; do
+  # The engine imports impact, improve and shared; --eval and --capture-miss need harness.
+  for want in lib/llm-diff-review.mjs lib/impact.mjs lib/improve.mjs lib/shared.mjs lib/harness.mjs \
+              bin/llm-review install.sh hooks/_chain; do
     [ -f "$NEW/$want" ] || { echo "x download looks wrong — $want is missing"; exit 1; }
   done
   while IFS= read -r link; do

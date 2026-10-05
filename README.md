@@ -83,15 +83,25 @@ llm-review                        # uncommitted + staged + untracked changes
 llm-review --staged               # exactly what a commit would contain
 llm-review . origin/main          # a whole branch, the way a PR bot sees it
 llm-review . <base> <tip>         # an explicit range
+llm-review --commit <sha>         # ONE commit, read as the code was at that commit
 ```
+
+`llm-review . <sha>` reviews everything **after** `<sha>` up to HEAD, not the commit itself — and
+`llm-review . HEAD` is an empty range. To review a single commit, use `--commit`.
 
 | flag | effect |
 | --- | --- |
 | `--minimal` | cheapest profile: 2 calls, one combined reviewer |
-| `--thorough` | deepest: 8 calls, four separate reviewers on the top model tier |
+| `--thorough` | deepest: up to 8 calls, five separate reviewers on the top model tier |
 | `--budget NAME` | `minimal` · `balanced` (default) · `thorough` |
 | `--max-calls N` | hard ceiling on provider calls for this run |
-| `--lenses LIST` | pick reviewers: `correctness,security,structure,qa,style` |
+| `--commit SHA` | review one commit, against its parent, reading that commit's tree |
+| `--lenses LIST` | pick reviewers: `correctness,semantic,blast,architecture,quality,security,qa,style` or a group: `change,design,risk,impact` |
+| `--no-loop` | skip the gap loop |
+| `--eval [--yes]` | score the reviewer on seeded cases, per category (plan only without `--yes`) |
+| `--improve [--yes]` | turn measured misses into trialled lessons (plan only without `--yes`) |
+| `--lessons` | list / `add` / `retire` / `promote` what the reviewer has learned |
+| `--capture-miss …` | turn a real miss into a permanent eval case |
 | `--block` | exit `2` on high findings, `3` if the review could not complete — for CI |
 | `--report FILE` | write findings and spend as JSON |
 | `--learn-style DIR…` | infer your style profile from existing code (costs nothing) |
@@ -102,47 +112,137 @@ llm-review . <base> <tip>         # an explicit range
 
 ## What it reviews
 
-Four reviewers work the same diff in parallel, each with its own mandate. One prompt asking for
-everything gets shallow everywhere; four focused ones do not.
+Specialist reviewers work the same diff, each with its own mandate. One prompt asking for everything
+gets shallow everywhere, and whatever comes last gets the least attention. Every finding is filed
+under a **category**, so the output says what kind of problem it is:
 
-**`correctness`** — what this change makes wrong. Old-vs-new behaviour and regressions for existing
-callers, logic and off-by-one errors, **loop and recursion loopholes** (unbounded loops, a counter
-mutated on only some paths, retry with no cap, missing base case, mutation during iteration, a query
-inside a loop), async races and missing awaits, swallowed errors, resource leaks, destructive data
-operations.
+```
+- src/gateway/merchant.routes.js:7 :: [semantic] scheduled deactivation now returns SUCCESS, so this
+  route runs deactivateStores immediately [change] (high)
+```
 
-**`security`** — a full SAST pass: injection, XSS, SSRF, path traversal, deserialization, authn and
-authz including IDOR/BOLA, crypto misuse, hardcoded secrets, CSRF, CORS, ReDoS — each tagged with
-its CWE and OWASP Top-10 category. Plus Dockerfile/k8s/CI/IaC issues, dependency risk, a STRIDE
-threat model, and for anything only a running system can prove, a `[RUNTIME]` finding carrying the
-exact payload and tool (ZAP, Burp, nuclei, osv-scanner) that would confirm it. Money-moving code is
-held to a higher bar.
+| category | reviewer | what it hunts |
+| --- | --- | --- |
+| `bug` | `correctness` | wrong results: logic, off-by-one, loop loopholes, async races, swallowed errors, leaks, destructive data ops |
+| `semantic` | `semantic` | same shape, different meaning: a status that now means more, a flipped comparison, a changed default, a dropped await, sync↔async, units |
+| `blast-radius` | `blast` | every caller, importer and consumer the change left behind — in files the diff never touched — plus the same-class sweep |
+| `architecture` | `architecture` | layering and boundaries, new import cycles, paired files that must agree, project-root config, operability, design fit |
+| `code-quality` | `quality` | duplicated logic (named), dead code, unbounded error handling, untestable code, names that lie |
+| `security` | `security` | SAST with CWE + OWASP, infra/CI, dependencies, STRIDE, `[RUNTIME]` attack plans, money movement |
+| `qa` | `qa` | acceptance, the missing test named, the edge matrix, platform QA, the regression suite |
+| `performance` | `correctness` | N+1, O(n²) on a growing path, work repeated per item |
+| `style` | `style` | your conventions, checked in code first (see below) |
 
-**`structure`** — the architecture reviewer, and the one that catches what line-by-line review
-misses:
+The `balanced` profile runs three of them in parallel, grouped by the evidence they share:
+`change` (bug + semantic + blast radius), `design` (architecture + code quality + style) and `risk`
+(security + QA). `thorough` gives correctness, impact, design, security and QA a call each.
 
-- **Blast radius.** For every symbol added, renamed, removed or re-signatured, it greps the whole
-  repo for the call sites and decides whether each still works. Zero call sites is itself a
-  finding — either dead code, or the search was too narrow.
-- **Project root and configuration.** Root files decide whether the repo builds, resolves its
-  dependencies, deploys and stays secure, so `package.json`, tsconfig, Dockerfile, CI workflows,
-  `.env.example` and infra are reviewed harder than application code — and it checks whether a
-  change elsewhere *should* have updated one of them and did not.
-- Layering violations, new circular imports, cross-feature coupling.
-- Duplicated logic that already exists (proved by grep), dead and leftover code, missing
-  observability, breaking changes with no migration or flag.
+### Change intelligence: the searching is done before any reviewer is called
 
-**`qa`** — reviews it as the person signing it off. Acceptance against the stated requirements,
-**coverage gaps named as the test that should exist**, a full edge and boundary matrix
-(empty/null/zero/max/unicode/concurrent/offline/timeout/permission-denied), platform-specific QA for
-web, mobile, backend and CLI, and the regression suite a tester must re-run.
+Blast radius and semantic review are mostly *searching*: who calls this, what did they get before,
+what do they get now. A metered reviewer with a ten-tool-call budget shared across several mandates
+ran out after the first couple of greps, which is why exactly these categories came back empty. So
+`lib/impact.mjs` does the searching in code, with `git grep`, for free, and hands every reviewer:
 
-Findings from all four are merged and de-duplicated. Cross-reviewer agreement is shown —
+- a **blast radius map**: each symbol the change removes, re-signatures, alters or adds, and every
+  reference to it in files the diff does not touch;
+- **semantic signals**: each place the meaning moved, such as `'SCHEDULED' → 'SUCCESS'` in a return
+  value, `>` → `>=`, a changed default, a removed guard or a dropped `await`;
+- **architecture and code-quality signals**: a UI or route file importing a database driver, a new
+  import cycle, a long function, an added line that already exists elsewhere.
+
+The reviewer then spends its budget judging those call sites, not finding them. One result is certain
+enough to report on its own: an export the change removes that untouched files still import is a
+`[blast-radius]` finding at `medium`, so a heuristic alone never blocks a `high` gate.
+
+### The gap loop
+
+A reviewer holding several mandates reports on the one it has most to say about and goes quiet on the
+rest. When a core category comes back **empty although the measurements found strong evidence for it**
+(a removed symbol still referenced, a changed return value or default, a layer skip, a duplicate), one
+focused second pass is asked to settle exactly those categories: report the defect, or answer CLEAN.
+It only spends budget the run already has. It never takes the call the adjudicator needs, never runs
+after a failed pass, and like everything model-derived it can only add findings. It is on for
+`balanced` and `thorough`, and off for `minimal` (whose point is one call) unless `LLM_REVIEW_GAP_LOOP=1`.
+Turn it off everywhere with `--no-loop` or `LLM_REVIEW_GAP_LOOP=0`.
+
+Findings from every reviewer are merged and de-duplicated. Cross-reviewer agreement is shown —
 `[correctness+security x2]` means two independent reviewers landed on the same line, which is the
 strongest confidence signal available.
 
 An **adjudicator** then re-checks every finding against the real code and drops the ones it can
 refute, so false positives do not accumulate.
+
+### Reviewing an older commit
+
+In a range or `--commit` review, the working tree is a *different version* of the code: callers have
+changed since, files are gone. A reviewer reading the present to judge the past traces today's blast
+radius. So when the reviewed tip is not the checked-out HEAD, the reviewer gets a read-only
+`git archive` export of that commit instead. There is no checkout, no hooks run, and nothing is written
+to the repository. Exports larger than `REVIEW_SNAPSHOT_MAX_MB` (default 300) fall back to the working
+tree, with a warning.
+
+---
+
+## Agents → loops → harness → a reviewer that improves itself
+
+```
+agents     specialist reviewers, one mandate each           lib/llm-diff-review.mjs
+  ↓
+loops      gap loop inside a review; eval → lesson → trial    lib/llm-diff-review.mjs, lib/improve.mjs
+  ↓
+harness    seeded cases with known defects, scored per        lib/harness.mjs, eval/cases/
+           category, plus clean controls that measure noise
+  ↓
+improve    every measured miss → a candidate lesson → trialled → promoted only if it helped
+```
+
+**Measure.** `llm-review --eval` lists the cases and what they would cost. `llm-review --eval --yes`
+builds each case as a tiny repository, runs the real engine on it, and scores it: did each expected
+defect come back in the right file, saying the right thing, under the right category? Clean
+**controls** count the other side: any high finding on a correct change is noise. Every run is appended
+to `~/.local/state/llm-review/eval-history.jsonl`, and the scoreboard shows each category against the
+previous run.
+
+Measured on 2026-10-05 against the 12 bundled cases, old engine vs this one (real calls):
+
+| | caught | filed under the right category | noise on the clean control | calls |
+| --- | --- | --- | --- | --- |
+| 7 single-defect cases, `minimal` | 7/7 → 7/7 | 0% → 100% | 0 → 0 | 9 → 9 |
+| 4 multi-file cases, `minimal` | 5/5 → 5/5 | 0% → 100% | 0 → 0 | 6 → 6 |
+| 12-symbol signature change, `balanced` | 1/1 → 1/1 | 0% → 100% | — | 2 → 3 |
+
+These bundled cases are small, and both engines catch their defects once pointed at the code, so they
+show classification, not recall. Recall is measured on **your** misses: capture each one (below), and
+the next `--eval` holds every later version to it.
+
+**Improve.** `llm-review --improve` reads the last eval. Each miss whose case carries a `lesson` (the
+general *class* of defect, written once by a person) becomes a candidate. `--improve --yes` trials it:
+the case it was missed on, plus every clean control, with the candidate injected into the prompt.
+
+- The miss is now caught and no control gained a blocking finding: **promoted**. Every future review
+  carries it, in its category.
+- Anything else: **retired**, and never retried.
+
+**Capture real misses.** When a merge-request bot or a colleague catches something this reviewer did
+not, turn it into a permanent case:
+
+```bash
+llm-review --capture-miss --commit <sha> --at src/routes/merchant.js:7 --category semantic \
+  --note "scheduled deactivation cascades immediately" \
+  --lesson "When a function returns an existing status for a new situation, check every caller that branches on it"
+```
+
+The commit's files, before and after, land in `~/.config/llm-review/eval-cases/` (your code, so never
+in this repository). From then on every eval and every lesson trial must catch it.
+
+**A lesson can only make the reviewer look harder.** A lesson is the one piece of this system whose text
+can come from a model, so it lives under the same rule as the adjudicator. A lesson telling the
+reviewer to skip, ignore, downgrade, approve or "not report" anything is refused when written and
+filtered when read, even if someone edits `lessons.json` by hand.
+
+**Cost.** Each eval case is one real review: up to 2 calls on `minimal` (the default for `--eval`).
+Nothing runs without `--yes`, and no hook ever runs an eval.
 
 ---
 
