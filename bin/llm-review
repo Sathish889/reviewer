@@ -19,7 +19,9 @@
 #   --minimal       shorthand for --budget minimal   (aliases: --fast, --cheap)
 #   --thorough      shorthand for --budget thorough
 #   --max-calls N   hard ceiling on provider calls for this run
-#   --lenses LIST   reviewers to run: correctness,security,structure,qa,code,risk,full
+#   --lenses LIST   reviewers to run: correctness,semantic,blast,architecture,quality,security,qa,style
+#                   or a group: change (bug+semantic+blast), design (architecture+quality+style),
+#                   risk (security+qa), impact (semantic+blast), full (everything in one pass)
 #   --block         exit 2 on high-severity findings / 3 if the review could not complete (for gates & CI)
 #   --report FILE   also write a machine-readable JSON report
 #   --status        show what is installed and how the gates are configured

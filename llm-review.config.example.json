@@ -13,8 +13,8 @@
     "gemini": { "bin": "gemini", "model": "gemini-2.5-pro", "extraArgs": [] }
   },
 
-  "//lenses": "MULTI-ENGINE. Setting this OVERRIDES the budget profile\u0027s reviewer pairing, so leave it unset unless you mean it (the key below is deliberately commented out). Which reviewers to run over each chunk, in PARALLEL. Each is a focused persona with its own mandate, so one bot's blind spot is covered by another. Default: whatever the budget profile pairs them into (balanced runs two composite reviewers covering all four mandates; minimal runs one). Setting this overrides that. Use [\"full\"] for a single combined pass (cheaper, shallower). Env override: LLM_REVIEW_LENSES=correctness,security,structure,qa (or 'full').",
-  "//lenses-example": ["correctness", "security", "structure", "qa"],
+  "//lenses": "MULTI-ENGINE. Setting this OVERRIDES the budget profile's reviewer grouping, so leave it unset unless you mean it (the key below is deliberately commented out). Reviewers: correctness, semantic, blast, architecture, quality, security, qa, style. Groups: change (correctness+semantic+blast), design (architecture+quality+style), risk (security+qa), impact (semantic+blast), full (one combined pass). Default: balanced runs change, design, risk; minimal runs full. Env override: LLM_REVIEW_LENSES=change,design,risk.",
+  "//lenses-example": ["change", "design", "risk"],
 
   "//multi-provider": "When BOTH the `claude` and `gemini` CLIs are installed, the lenses are round-robined across them, so two genuinely different models cross-check the same diff. Nothing to configure — install the second CLI and it is used automatically. Force a single one with LLM_REVIEW_PROVIDER.",
 

@@ -1046,6 +1046,21 @@ irun REVIEW_MAX_PROMPT_CHARS=2000 >/dev/null
 is "balanced puts every file in one chunk per reviewer" "$(jr 'r.budget.plannedPasses')" 3
 is "  ...so no mandate is skipped"                 "$(jr 'r.budget.secondOpinionsSkipped')" 0
 rm -f "$IR"/src/big*.js; git -C "$IR" add -A
+echo "agents — the measurements, unit by unit (no provider involved)"
+IM(){ node --input-type=module -e "import * as I from '$KIT/lib/impact.mjs'; $1"; }
+is "declarations are recognised across languages" "$(IM "console.log(['def charge(x):','func Charge(x int) error {','pub fn charge(x: u8) {','fun charge(x: Int) {','export async function charge(x) {','  let local = 1;'].map(I.declName).join(','))")" "charge,Charge,charge,charge,charge,"
+SEC='{file:"src/components/List.jsx",text:"diff --git a/src/components/List.jsx b/src/components/List.jsx\n--- a/src/components/List.jsx\n+++ b/src/components/List.jsx\n@@ -1,1 +1,2 @@\n+import { Pool } from \"pg\";\n const x = 1;\n"}'
+is "a UI file importing a DB driver is a layer skip" "$(IM "console.log(I.architectureSignals([$SEC], () => null).map(s=>s.kind).join(','))")" layer-skip
+CYC='{file:"src/a.js",text:"diff --git a/src/a.js b/src/a.js\n--- a/src/a.js\n+++ b/src/a.js\n@@ -1,1 +1,2 @@\n+import { b } from \"./b.js\";\n export const a = 1;\n"}'
+is "a new import that closes a loop is a cycle"   "$(IM "console.log(I.architectureSignals([$CYC], (f) => f === 'src/b.js' ? 'import { a } from \"./a.js\";' : null).map(s=>s.kind).join(','))")" import-cycle
+LONG="$(node -e "let t='diff --git a/x.js b/x.js\n--- a/x.js\n+++ b/x.js\n@@ -0,0 +1,70 @@\n+export function big() {\n'; for(let i=0;i<60;i++) t+='+  step'+i+'();\n'; t+='+}\n+export const after = 1;\n'; for(let i=0;i<6;i++) t+='+export const tail'+i+' = '+i+';\n'; console.log(JSON.stringify({file:'x.js',text:t}))")"
+is "a long function is measured by its braces"    "$(IM "console.log(I.qualitySignals([$LONG], null, {maxFunctionLines: 40}).map(s=>s.kind+':'+s.detail.match(/adds (\\d+)/)[1]).join(','))")" "long-function:62"
+# dangling-reference: the negative paths matter as much as the positive one
+DR(){ IM "const rows=[{kind:'removed',name:'formatX',file:'src/lib/fmt.js',line:3,outside:1,declaredElsewhere:$1,refs:['src/other.js:2'],outsideFiles:['src/other.js']}]; console.log(I.impactFindings(rows, () => $2).length)"; }
+is "a removed symbol still imported is reported"   "$(DR false "\"import { formatX } from '../lib/fmt.js';\"")" 1
+is "  ...but not when it was moved, not removed"    "$(DR true "\"import { formatX } from '../lib/fmt.js';\"")" 0
+is "  ...nor for a namesake that never imports it"  "$(DR false "\"const formatX = (v) => v; // local\"")" 0
+is "  ...nor because a file merely says 'lib'"      "$(DR false "\"import x from '../lib/other.js'; formatX();\"")" 0
 echo "loops — the gap loop settles a silent category, inside the budget"
 mkfake 'case "$*" in
   *"FOCUSED SECOND-PASS"*) echo "- src/routes/merchant.js:4 :: [semantic] gap pass found the cascade (high)";;
