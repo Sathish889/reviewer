@@ -1208,12 +1208,14 @@ hrun node "$KIT/lib/improve.mjs" run --yes >/dev/null
 is "a trial that cannot run leaves the lesson a candidate" "$(node -e "console.log(require('$WORK/lessons.json').lessons[0].status)")" candidate
 
 echo "harness — a case cannot choose what it copies, or where"
-HC="$WORK/hostilecases"; rm -rf "$HC"; mkdir -p "$HC/evil/base" "$WORK/precious"
-echo "do-not-copy" > "$WORK/precious/secret"
+HC="$WORK/hostilecases"; rm -rf "$HC"; mkdir -p "$HC/evil/base" "$WORK/precious/base"
+# The decoy sits where buildCase WOULD copy from if it honoured the case's dir: <dir>/base.
+echo "do-not-copy" > "$WORK/precious/base/secret"
+ln -s "$WORK/precious/base/secret" "$HC/evil/base/link"      # and a symlink pointing at it
 printf '{"name":"../../escaped","dir":"%s","description":"x","expect":[]}\n' "$WORK/precious" > "$HC/evil/case.json"
 echo 'const ok = 1;' > "$HC/evil/base/a.js"
 is "a case's own name and dir are ignored"        "$(env LLM_REVIEW_EVAL_CASES="$HC" node --input-type=module -e "import { loadCases } from '$KIT/lib/harness.mjs'; const c=loadCases(['evil'])[0]; console.log(c.name === 'evil' && c.dir === '$HC/evil')")" true
-is "  ...so nothing outside the case is copied"   "$(env LLM_REVIEW_EVAL_CASES="$HC" node --input-type=module -e "import { loadCases, buildCase } from '$KIT/lib/harness.mjs'; const r=buildCase(loadCases(['evil'])[0], '$WORK/hcroot'); import('node:fs').then(fs=>console.log(fs.existsSync(r+'/secret') ? 'leaked' : 'ok'))")" ok
+is "  ...so nothing outside the case is copied"   "$(env LLM_REVIEW_EVAL_CASES="$HC" node --input-type=module -e "import { loadCases, buildCase } from '$KIT/lib/harness.mjs'; const r=buildCase(loadCases(['evil'])[0], '$WORK/hcroot'); import('node:fs').then(fs=>console.log(fs.existsSync(r+'/secret') || fs.existsSync(r+'/link') ? 'leaked' : 'ok'))")" ok
 
 echo "self-improving — the filter, phrase by phrase"
 SAFE(){ node --input-type=module -e "import { lessonIsSafe } from '$KIT/lib/improve.mjs'; console.log(lessonIsSafe(process.argv[1]) ? 'ok' : 'refused')" "$1"; }
